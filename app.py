@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from twelvelabs import TwelveLabs
 from botocore.exceptions import ClientError
 
-# Load environment variables
 load_dotenv()
 INDEX_ID = os.getenv("INDEX_ID")
 API_KEY = os.getenv("API_KEY")
@@ -411,6 +410,114 @@ def api_update_metadata(video_id):
         })
     
     return jsonify({"error": "Failed to update metadata"}), 500
+
+
+@app.route('/api/search', methods=['POST'])
+def api_search_videos():
+    data = request.get_json() or {}
+    
+    query_text = data.get('query_text', '')
+    search_options = data.get('options', ['visual'])
+    page = data.get('page', 1) 
+    per_page = data.get('per_page', 18)
+    confidence_level = data.get('confidence', 'high')
+    
+    if not query_text:
+        return jsonify({"error": "Search query text is required"}), 400
+    
+    try:
+        client = TwelveLabs(api_key=API_KEY)
+        
+        search_results = client.search.query(
+            index_id=INDEX_ID,
+            query_text=query_text,
+            options=search_options
+        )
+        
+        all_clips = list(search_results.data)
+        try:
+            while True:
+                all_clips.extend(list(next(search_results)))
+        except StopIteration:
+            pass
+        
+        if confidence_level.lower() == 'high':
+            filtered_clips = [clip for clip in all_clips if clip.confidence.lower() == 'high']
+        elif confidence_level.lower() == 'medium':
+            filtered_clips = [clip for clip in all_clips if clip.confidence.lower() in ['high', 'medium']]
+        else:
+            filtered_clips = all_clips  
+        
+        filtered_clips.sort(key=lambda x: x.score, reverse=True)
+        
+        total_results = len(filtered_clips)
+        total_pages = (total_results + per_page - 1) // per_page  
+
+        start_idx = (page - 1) * per_page
+        end_idx = min(start_idx + per_page, total_results)
+        page_clips = filtered_clips[start_idx:end_idx]
+        
+
+        results = []
+        for clip in page_clips:
+
+            video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{clip.video_id}"
+            headers = {"x-api-key": API_KEY}
+            
+            try:
+                video_response = requests.get(video_url, headers=headers)
+                video_response.raise_for_status()
+                video_data = video_response.json()
+                
+                video_url = None
+                if "hls" in video_data and "video_url" in video_data["hls"]:
+                    video_url = video_data["hls"]["video_url"]
+                
+                thumbnail_url = None
+                if "hls" in video_data and "thumbnail_urls" in video_data["hls"] and video_data["hls"]["thumbnail_urls"]:
+                    thumbnail_url = video_data["hls"]["thumbnail_urls"][0]
+                
+                results.append({
+                    "video_id": clip.video_id,
+                    "score": clip.score,
+                    "start": clip.start,
+                    "end": clip.end,
+                    "confidence": clip.confidence,
+                    "video_url": video_url,
+                    "thumbnail_url": thumbnail_url,
+                    "filename": video_data.get("system_metadata", {}).get("filename", "Unknown")
+                })
+            except Exception as e:
+                app.logger.error(f"Error fetching video details for {clip.video_id}: {str(e)}")
+                results.append({
+                    "video_id": clip.video_id,
+                    "score": clip.score,
+                    "start": clip.start,
+                    "end": clip.end,
+                    "confidence": clip.confidence,
+                    "video_url": None,
+                    "thumbnail_url": None,
+                    "filename": "Unknown"
+                })
+        
+        return jsonify({
+            "success": True,
+            "query": query_text,
+            "options": search_options,
+            "results": results,
+            "pagination": {
+                "page": page,
+                "per_page": per_page,
+                "total_results": total_results,
+                "total_pages": total_pages,
+                "has_next": page < total_pages
+            }
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error searching videos: {str(e)}")
+        return jsonify({"error": f"Failed to search videos: {str(e)}"}), 500
+
 
 if __name__ == '__main__':
     app.run(debug=True)
