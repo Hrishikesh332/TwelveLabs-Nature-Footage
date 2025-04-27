@@ -3,3 +3,4 @@ flask
 python-dotenv
 twelvelabs
 boto
+gunicorn
