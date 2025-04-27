@@ -10,6 +10,11 @@ from dotenv import load_dotenv
 from twelvelabs import TwelveLabs
 from botocore.exceptions import ClientError
 
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
+import atexit
+
+
 load_dotenv()
 INDEX_ID = os.getenv("INDEX_ID")
 API_KEY = os.getenv("API_KEY")
@@ -510,6 +515,28 @@ def api_search_videos():
     except Exception as e:
         app.logger.error(f"Error searching videos: {str(e)}")
         return jsonify({"error": f"Failed to search videos: {str(e)}"}), 500
+
+
+def wake_up_app():
+    try:
+        app_url = os.getenv('APP_URL')
+        if app_url:
+            response = requests.get(app_url)
+            if response.status_code == 200:
+                print(f"Successfully pinged {app_url} at {datetime.now()}")
+            else:
+                print(f"Failed to ping {app_url} (status code: {response.status_code}) at {datetime.now()}")
+        else:
+            print("APP_URL environment variable not set.")
+    except Exception as e:
+        print(f"Error occurred while pinging app: {e}")
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(wake_up_app, 'interval', minutes=9)
+scheduler.start()
+
+atexit.register(lambda: scheduler.shutdown())
+
 
 if __name__ == '__main__':
     app.run(debug=True)
