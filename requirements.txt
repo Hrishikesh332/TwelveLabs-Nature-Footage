@@ -6,3 +6,4 @@ boto
 gunicorn
 requests
 apscheduler
+flask-cors

@@ -9,6 +9,7 @@ from flask import Flask, request, jsonify, send_file
 from dotenv import load_dotenv
 from twelvelabs import TwelveLabs
 from botocore.exceptions import ClientError
+from flask_cors import CORS
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
@@ -23,6 +24,7 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 lambda_client = boto3.client(
     'lambda', 
