@@ -4,3 +4,4 @@ python-dotenv
 twelvelabs
 boto
 gunicorn
+requests
