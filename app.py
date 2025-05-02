@@ -11,9 +11,20 @@ from twelvelabs import TwelveLabs
 from botocore.exceptions import ClientError
 from flask_cors import CORS
 
+from weaviate.util import generate_uuid5
+
+
+import weaviate
+from weaviate.auth import AuthApiKey
+from weaviate.classes.config import Configure, Property, DataType, VectorDistances
+# from weaviate.collections import Collection
+
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import atexit
+
+import logging
 
 
 load_dotenv()
@@ -22,6 +33,9 @@ API_KEY = os.getenv("API_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+
+WEAVIATE_URL = os.getenv("WEAVIATE_URL")
+WEAVIATE_API_KEY = os.getenv("WEAVIATE_API_KEY")
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -32,6 +46,710 @@ lambda_client = boto3.client(
     aws_access_key_id=AWS_ACCESS_KEY_ID,
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY
 )
+
+weaviate_client = None
+
+@app.route('/')
+def home():
+    return "Server is running! Current time: " + str(datetime.now())
+
+
+def init_weaviate_client():
+    global weaviate_client
+    
+    if not WEAVIATE_URL or not WEAVIATE_API_KEY:
+        app.logger.error("WEAVIATE_URL or WEAVIATE_API_KEY environment variables not set")
+        return False
+    
+    try:
+        weaviate_client = weaviate.connect_to_weaviate_cloud(
+            cluster_url=WEAVIATE_URL,
+            auth_credentials=AuthApiKey(WEAVIATE_API_KEY),
+        )
+        
+        if not weaviate_client.is_ready():
+            app.logger.error("Weaviate client is not ready")
+            return False
+            
+        app.logger.info("Weaviate client initialized successfully")
+        return True
+    except Exception as e:
+        app.logger.error(f"Error initializing Weaviate client: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return False
+
+
+init_weaviate_client()
+
+
+def create_videos_schema():
+    if not weaviate_client:
+        app.logger.error("Weaviate client not initialized")
+        return False
+
+    try:
+        collections = weaviate_client.collections.list_all()
+        if "NatureVideo" not in collections:
+
+            weaviate_client.collections.create(
+                name="NatureVideo",
+                description="Nature video embeddings from Twelve Labs",
+                vectorizer="none", 
+                vector_index_config=Configure.VectorIndex.hnsw(
+                    distance_metric=VectorDistances.COSINE,
+                    ef_construction=128,
+                    max_connections=16,
+                    vector_cache_max_objects=1000000
+                ),
+                properties=[
+                    Property(name="video_id", data_type=DataType.TEXT, description="Twelve Labs video ID"),
+                    Property(name="filename", data_type=DataType.TEXT, description="Original filename"),
+                    Property(name="duration", data_type=DataType.NUMBER, description="Video duration in seconds"),
+                    Property(name="embedding_type", data_type=DataType.TEXT, description="Type of embedding (visual-text, audio)"),
+                    Property(name="scope", data_type=DataType.TEXT, description="Scope of embedding (clip, video)"),
+                    Property(name="start_time", data_type=DataType.NUMBER, description="Start time of the clip"),
+                    Property(name="end_time", data_type=DataType.NUMBER, description="End time of the clip"),
+                ]
+            )
+            app.logger.info("Created NatureVideo collection in Weaviate")
+        else:
+            app.logger.info("NatureVideo collection already exists in Weaviate")
+        return True
+    except Exception as e:
+        app.logger.error(f"Failed to create collection: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return False
+
+if weaviate_client:
+    create_videos_schema()
+
+
+def get_video_embedding(video_id):
+
+    try:
+
+        video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
+        headers = {"x-api-key": API_KEY}
+        
+        params = {
+            "embedding_option": ["visual-text", "audio"]
+        }
+        
+        app.logger.info(f"Retrieving video information with embeddings for {video_id}")
+        video_response = requests.get(video_url, headers=headers, params=params)
+        
+        if video_response.status_code != 200:
+            error_msg = f"API error: {video_response.status_code} - {video_response.text}"
+            app.logger.error(f"Error retrieving video with embeddings: {error_msg}")
+            track_embedding_status(video_id, "failed", None, error_msg)
+            return {"status": "failed", "error": error_msg}
+        
+        video_data = video_response.json()
+        
+        if "embedding" not in video_data or "video_embedding" not in video_data.get("embedding", {}):
+            error_msg = "No embeddings available for this video"
+            app.logger.warning(f"No embeddings for video {video_id}: {error_msg}")
+            track_embedding_status(video_id, "failed", None, error_msg)
+            return {"status": "failed", "error": error_msg}
+        
+        embedding_data = {
+            "status": "ready",
+            "_id": video_id,
+            "model_name": video_data.get("embedding", {}).get("model_name", "unknown"),
+            "video_embedding": video_data.get("embedding", {}).get("video_embedding", {})
+        }
+        
+        track_embedding_status(video_id, "retrieved", video_id)
+        return embedding_data
+        
+    except Exception as e:
+        error_msg = str(e)
+        app.logger.error(f"Error getting video embedding: {error_msg}")
+        track_embedding_status(video_id, "error", None, error_msg)
+        return {"status": "error", "error": error_msg}
+    
+
+def track_embedding_status(video_id, status, task_id=None, error=None):
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    csv_path = "embedding_status.csv"
+    file_exists = os.path.isfile(csv_path)
+    
+    with open(csv_path, 'a', newline='') as csvfile:
+        fieldnames = ['timestamp', 'video_id', 'status', 'task_id', 'error']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        
+        if not file_exists:
+            writer.writeheader()
+        
+        writer.writerow({
+            'timestamp': timestamp,
+            'video_id': video_id,
+            'status': status,
+            'task_id': task_id or '',
+            'error': error or ''
+        })
+    
+    log_message = f"Embedding status: {status} for video {video_id}"
+    if error:
+        log_message += f" - Error: {error}"
+    
+    if status == 'failed' or status == 'error':
+        app.logger.error(log_message)
+    else:
+        app.logger.info(log_message)
+
+@app.route('/api/recreate-schema', methods=['POST'])
+def api_recreate_schema():
+    try:
+        if not weaviate_client:
+            return jsonify({"error": "Weaviate client not initialized"}), 500
+        
+        videos_response = list_videos(page=1, page_limit=1)
+        if not videos_response or 'data' not in videos_response or not videos_response['data']:
+            return jsonify({"error": "No videos found to determine vector dimensions"}), 500
+        
+        sample_video_id = videos_response['data'][0]['_id']
+        
+        video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{sample_video_id}"
+        headers = {"x-api-key": API_KEY}
+        params = {
+            "embedding_option": ["visual-text", "audio"]
+        }
+        
+        video_response = requests.get(video_url, headers=headers, params=params)
+        video_response.raise_for_status()
+        video_data = video_response.json()
+
+        vector_dimensions = None
+        embedding_info = video_data.get("embedding", {})
+        
+        if embedding_info and "video_embedding" in embedding_info:
+            segments = embedding_info.get("video_embedding", {}).get("segments", [])
+            if segments:
+                first_vector = segments[0].get("float", [])
+                vector_dimensions = len(first_vector)
+        
+        if not vector_dimensions:
+            return jsonify({"error": "Could not determine vector dimensions from sample video"}), 500
+        
+        app.logger.info(f"Detected vector dimensions: {vector_dimensions}")
+        
+        all_collections = weaviate_client.collections.list_all()
+        if "NatureVideo" in all_collections:
+            try:
+                weaviate_client.collections.delete("NatureVideo")
+                app.logger.info("Deleted existing NatureVideo collection")
+            except Exception as e:
+                app.logger.error(f"Error deleting NatureVideo collection: {str(e)}")
+        
+        try:
+
+            weaviate_client.collections.create(
+                name="NatureVideo",
+                description="Nature video embeddings from Twelve Labs",
+                vectorizer_config=None,  
+                vector_index_config=Configure.VectorIndex.hnsw(
+                    distance_metric=VectorDistances.COSINE,
+                    ef_construction=128,
+                    max_connections=16,
+                    vector_cache_max_objects=1000000
+                ),
+                properties=[
+                    Property(name="video_id", data_type=DataType.TEXT, description="Twelve Labs video ID"),
+                    Property(name="filename", data_type=DataType.TEXT, description="Original filename"),
+                    Property(name="duration", data_type=DataType.NUMBER, description="Video duration in seconds"),
+                    Property(name="embedding_type", data_type=DataType.TEXT, description="Type of embedding (visual-text, audio)"),
+                    Property(name="scope", data_type=DataType.TEXT, description="Scope of embedding (clip, video)"),
+                    Property(name="start_time", data_type=DataType.NUMBER, description="Start time of the clip"),
+                    Property(name="end_time", data_type=DataType.NUMBER, description="End time of the clip"),
+                ]
+            )
+            
+            app.logger.info(f"Created NatureVideo collection successfully with {vector_dimensions} dimensions")
+            
+            return jsonify({
+                "success": True, 
+                "message": f"Schema recreated successfully with {vector_dimensions} dimensions"
+            })
+        
+        except Exception as e:
+            app.logger.error(f"Error creating collection: {str(e)}")
+            import traceback
+            app.logger.error(traceback.format_exc())
+            return jsonify({"error": f"Error creating collection: {str(e)}"}), 500
+            
+    except Exception as e:
+        app.logger.error(f"Error in recreate schema process: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return jsonify({"error": f"Error recreating schema: {str(e)}"}), 500
+
+
+
+
+def store_video_embedding_in_weaviate(video_id, embedding_data):
+
+    app.logger.info(f"Storing embeddings for video {video_id}")
+    
+    if not weaviate_client:
+        app.logger.error("Weaviate client not initialized")
+        return False
+    
+    try:
+        collections = weaviate_client.collections.list_all()
+        if "NatureVideo" not in collections:
+            app.logger.warning("NatureVideo collection does not exist, creating it...")
+            create_videos_schema()
+        
+        try:
+            collection = weaviate_client.collections.get("NatureVideo")
+            app.logger.info("Successfully accessed NatureVideo collection")
+        except Exception as e:
+            app.logger.error(f"Failed to access NatureVideo collection: {str(e)}")
+            return False
+        
+        try:
+            video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
+            headers = {"x-api-key": API_KEY}
+            
+            video_response = requests.get(video_url, headers=headers)
+            video_response.raise_for_status()
+            video_data = video_response.json()
+            
+            filename = video_data.get("system_metadata", {}).get("filename", "unknown")
+            duration = video_data.get("system_metadata", {}).get("duration", 0)
+            
+            if isinstance(duration, str):
+                duration = float(duration)
+            
+            app.logger.info(f"Video metadata: filename={filename}, duration={duration}")
+            
+        except Exception as e:
+            app.logger.error(f"Error retrieving video metadata: {str(e)}")
+            return False
+        
+        segments = []
+        
+        if embedding_data and embedding_data.get("video_embedding"):
+            segments = embedding_data.get("video_embedding", {}).get("segments", [])
+        
+        if not segments and video_data:
+            embedding_info = video_data.get("embedding", {})
+            if embedding_info and "video_embedding" in embedding_info:
+                segments = embedding_info.get("video_embedding", {}).get("segments", [])
+        
+        if not segments:
+            app.logger.error(f"No embedding segments found for video {video_id}")
+            return False
+        
+        app.logger.info(f"Found {len(segments)} embedding segments")
+        
+        if segments:
+            first_segment = segments[0]
+            vector = first_segment.get("float", [])
+            vector_dimensions = len(vector)
+            app.logger.info(f"First segment has {vector_dimensions} dimensions")
+        
+        successful_inserts = 0
+        failed_inserts = 0
+        
+        for segment in segments:
+            try:
+                vector = segment.get("float", [])
+                embedding_type = segment.get("embedding_option", "unknown")
+                scope = segment.get("embedding_scope", "unknown")
+                start_time = segment.get("start_offset_sec", 0)
+                end_time = segment.get("end_offset_sec", duration)
+                
+                if isinstance(start_time, str):
+                    start_time = float(start_time)
+                if isinstance(end_time, str):
+                    end_time = float(end_time)
+                
+                if not vector:
+                    app.logger.warning(f"Empty vector for {embedding_type}/{scope} segment")
+                    continue
+                
+                properties = {
+                    "video_id": video_id,
+                    "filename": filename,
+                    "duration": float(duration),
+                    "embedding_type": embedding_type,
+                    "scope": scope,
+                    "start_time": float(start_time),
+                    "end_time": float(end_time)
+                }
+                
+                object_id = f"{video_id}_{embedding_type}_{scope}"
+                object_uuid = generate_uuid5(object_id)
+                
+                app.logger.info(f"Inserting {embedding_type}/{scope} vector with {len(vector)} dimensions")
+                
+                collection.data.insert(
+                    properties=properties,
+                    vector=vector,
+                    uuid=object_uuid
+                )
+                
+                app.logger.info(f"Successfully inserted {embedding_type}/{scope} embedding")
+                successful_inserts += 1
+                
+            except Exception as e:
+                app.logger.error(f"Failed to insert {embedding_type}/{scope} embedding: {str(e)}")
+                failed_inserts += 1
+        
+
+        app.logger.info(f"Inserted {successful_inserts} embeddings, failed {failed_inserts} embeddings")
+        
+        if successful_inserts > 0:
+            return True
+        else:
+            app.logger.error("Failed to insert any embeddings")
+            return False
+        
+    except Exception as e:
+        app.logger.error(f"Error in store_video_embedding_in_weaviate: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return False
+    
+
+
+
+def find_similar_videos(video_id, limit=5):
+
+    if not weaviate_client:
+        app.logger.error("Weaviate client not initialized")
+        return []
+    
+    try:
+
+        video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
+        headers = {"x-api-key": API_KEY}
+        
+        video_response = requests.get(video_url, headers=headers)
+        video_response.raise_for_status()
+        video_data = video_response.json()
+        
+        user_metadata = video_data.get("user_metadata", {})
+        
+        if "similar_videos" in user_metadata and "similar_videos_timestamp" in user_metadata:
+            timestamp = user_metadata.get("similar_videos_timestamp", 0)
+            current_time = int(time.time())
+            
+            if current_time - timestamp < 86400: 
+                return user_metadata.get("similar_videos", [])
+        
+
+        embedding_data = get_video_embedding(video_id)
+        
+        if embedding_data.get("status") != "ready":
+            return [] 
+        
+        segments = embedding_data.get("video_embedding", {}).get("segments", [])
+        visual_embedding = None
+        
+        for segment in segments:
+            if segment.get("embedding_option") == "visual-text" and segment.get("embedding_scope") == "video":
+                visual_embedding = segment.get("float", [])
+                break
+        
+        if not visual_embedding:
+            return []  
+        
+        store_video_embedding_in_weaviate(video_id, embedding_data)
+        
+        results = weaviate_client.query.get(
+            "NatureVideo", 
+            ["video_id", "filename"]
+        ).with_near_vector({
+            "vector": visual_embedding
+        }).with_limit(limit + 1).do() 
+        
+        similar_videos = []
+        
+        for result in results.get("data", {}).get("Get", {}).get("NatureVideo", []):
+            result_video_id = result.get("video_id")
+            
+            if result_video_id != video_id:
+
+                video_detail_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{result_video_id}"
+                video_detail_response = requests.get(video_detail_url, headers=headers)
+                
+                if video_detail_response.status_code == 200:
+                    video_detail = video_detail_response.json()
+                    
+                    video_url = None
+                    thumbnail_url = None
+                    
+                    if "hls" in video_detail:
+                        video_url = video_detail.get("hls", {}).get("video_url")
+                        if "thumbnail_urls" in video_detail.get("hls", {}) and video_detail.get("hls", {}).get("thumbnail_urls"):
+                            thumbnail_url = video_detail.get("hls", {}).get("thumbnail_urls")[0]
+                    
+                    similar_videos.append({
+                        "video_id": result_video_id,
+                        "filename": result.get("filename"),
+                        "video_url": video_url,
+                        "thumbnail_url": thumbnail_url
+                    })
+                    
+                    if len(similar_videos) >= limit:
+                        break
+        
+        if similar_videos:
+            metadata = {
+                "similar_videos": similar_videos,
+                "similar_videos_timestamp": int(time.time())
+            }
+            update_video_metadata(video_id, metadata)
+        
+        return similar_videos
+        
+    except Exception as e:
+        app.logger.error(f"Error finding similar videos: {str(e)}")
+        return []
+    
+
+@app.route('/api/similar-videos/<video_id>', methods=['GET'])
+def api_get_similar_videos(video_id):
+
+    limit = request.args.get('limit', 10, type=int)
+    
+    similar_videos = find_similar_videos(video_id, limit)
+    
+    return jsonify({
+        "success": True,
+        "video_id": video_id,
+        "similar_videos": similar_videos
+    })
+
+
+
+
+@app.route('/api/batch-embed', methods=['POST'])
+def api_batch_embed_videos():
+
+    try:
+
+        data = request.get_json() or {}
+        limit = data.get('limit', 100)
+        
+        videos_response = list_videos(page=1, page_limit=limit)
+        if not videos_response or 'data' not in videos_response:
+            return jsonify({"error": "Failed to retrieve videos"}), 500
+        
+        video_ids = [video['_id'] for video in videos_response['data']]
+        
+        already_embedded = set()
+        if weaviate_client:
+            try:
+                response = weaviate_client.query.get(
+                    "NatureVideo", 
+                    ["video_id"]
+                ).with_limit(1000).do()
+                
+                for item in response.get("data", {}).get("Get", {}).get("NatureVideo", []):
+                    already_embedded.add(item.get("video_id"))
+                
+                app.logger.info(f"Found {len(already_embedded)} videos already embedded in Weaviate")
+            except Exception as e:
+                app.logger.error(f"Error checking existing embeddings: {str(e)}")
+        
+        results = []
+        for video_id in video_ids:
+            if video_id in already_embedded:
+                app.logger.info(f"Skipping video {video_id} - already embedded")
+                track_embedding_status(video_id, "skipped", None, "Already embedded")
+                results.append({
+                    "video_id": video_id,
+                    "status": "skipped",
+                    "reason": "Already embedded"
+                })
+                continue
+                
+            try:
+                embedding_data = get_video_embedding(video_id)
+
+
+                
+                if embedding_data.get("status") == "ready":
+ 
+                    success = store_video_embedding_in_weaviate(video_id, embedding_data)
+                    
+                    status = "stored" if success else "failed"
+                    track_embedding_status(
+                        video_id, 
+                        status, 
+                        video_id, 
+                        None if success else "Failed to store in Weaviate"
+                    )
+                    
+                    results.append({
+                        "video_id": video_id,
+                        "status": status,
+                        "embedding":embedding_data
+                    })
+                else:
+                    track_embedding_status(
+                        video_id, 
+                        embedding_data.get("status", "unknown"), 
+                        None, 
+                        embedding_data.get("error")
+                    )
+                    
+                    results.append({
+                        "video_id": video_id,
+                        "status": embedding_data.get("status", "unknown"),
+                        "error": embedding_data.get("error")
+                    })
+            except Exception as e:
+                error_msg = str(e)
+                app.logger.error(f"Error processing video {video_id}: {error_msg}")
+                track_embedding_status(video_id, "error", None, error_msg)
+                results.append({
+                    "video_id": video_id,
+                    "status": "error",
+                    "error": error_msg
+                })
+        
+        summary_report = {
+            "total": len(video_ids),
+            "skipped": sum(1 for r in results if r.get("status") == "skipped"),
+            "stored": sum(1 for r in results if r.get("status") == "stored"),
+            "processing": sum(1 for r in results if r.get("status") == "processing"),
+            "failed": sum(1 for r in results if r.get("status") == "failed" or r.get("status") == "error"),
+        }
+        
+        return jsonify({
+            "success": True,
+            "summary": summary_report,
+            "results": results
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Batch embedding failed: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return jsonify({"error": f"Batch embedding failed: {str(e)}"}), 500
+
+def update_embeddings():
+    app.logger.info("Starting scheduled embedding update")
+    
+    try:
+        videos_response = list_videos(page=1, page_limit=50)
+        if not videos_response or 'data' not in videos_response:
+            app.logger.error("Failed to retrieve videos for embedding update")
+            return
+        
+        video_ids = [video['_id'] for video in videos_response['data']]
+        
+        for video_id in video_ids:
+            try:
+
+                embedding_data = get_video_embedding(video_id)
+                
+                if embedding_data.get("status") == "ready":
+                    store_video_embedding_in_weaviate(video_id, embedding_data)
+                    app.logger.info(f"Updated embeddings for video {video_id}")
+            except Exception as e:
+                app.logger.error(f"Error updating embeddings for video {video_id}: {str(e)}")
+    
+    except Exception as e:
+        app.logger.error(f"Scheduled embedding update failed: {str(e)}")
+
+
+
+def track_embedding_status(video_id, status, task_id=None, error=None):
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    csv_path = "embedding_status.csv"
+    file_exists = os.path.isfile(csv_path)
+    
+    with open(csv_path, 'a', newline='') as csvfile:
+        fieldnames = ['timestamp', 'video_id', 'status', 'task_id', 'error']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        
+        if not file_exists:
+            writer.writeheader()
+        
+        writer.writerow({
+            'timestamp': timestamp,
+            'video_id': video_id,
+            'status': status,
+            'task_id': task_id or '',
+            'error': error or ''
+        })
+
+@app.route('/api/embedding-status', methods=['GET'])
+def api_embedding_status():
+
+    try:
+
+        csv_path = "embedding_status.csv"
+        if not os.path.isfile(csv_path):
+            return jsonify({
+                "success": True,
+                "message": "No embedding status data available",
+                "status": {}
+            })
+        
+
+        with open(csv_path, 'r') as csvfile:
+            reader = csv.DictReader(csvfile)
+            
+            status_by_video = {}
+            for row in reader:
+                video_id = row.get('video_id')
+                if video_id:
+                    status_by_video[video_id] = {
+                        "status": row.get('status'),
+                        "timestamp": row.get('timestamp'),
+                        "task_id": row.get('task_id'),
+                        "error": row.get('error')
+                    }
+            
+
+            status_counts = {
+                "total": len(status_by_video),
+                "stored": sum(1 for s in status_by_video.values() if s.get("status") == "stored"),
+                "processing": sum(1 for s in status_by_video.values() if s.get("status") == "processing"),
+                "failed": sum(1 for s in status_by_video.values() if s.get("status") == "failed" or s.get("status") == "error"),
+                "skipped": sum(1 for s in status_by_video.values() if s.get("status") == "skipped")
+            }
+            
+            return jsonify({
+                "success": True,
+                "summary": status_counts,
+                "status": status_by_video
+            })
+            
+    except Exception as e:
+        app.logger.error(f"Error getting embedding status: {str(e)}")
+        return jsonify({"error": f"Error getting embedding status: {str(e)}"}), 500
+    
+@app.route('/api/download/embedding-status', methods=['GET'])
+def download_embedding_status():
+    csv_path = "embedding_status.csv"
+    
+    if not os.path.isfile(csv_path):
+        return jsonify({"error": "Embedding status CSV not found"}), 404
+    
+    return send_file(
+        csv_path,
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name='embedding_status.csv'
+    )
+
+
+
+
 
 def get_index_info():
     url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}"
@@ -132,7 +850,7 @@ def update_video_metadata(video_id, metadata):
         return None
 
 def generate_structured_csv_report(results):
-    # Generate a CSV report from structured analysis results
+
     csv_data = io.StringIO()
     csv_writer = csv.writer(csv_data)
     
@@ -142,7 +860,7 @@ def generate_structured_csv_report(results):
         'Status', 'Raw Analysis'
     ])
     
-    # Write data rows
+
     for result in results:
         video_id = result.get('video_id', 'N/A')
         status = 'Success' if result.get('success', False) else 'Failed'
@@ -536,8 +1254,10 @@ def wake_up_app():
 scheduler = BackgroundScheduler()
 scheduler.add_job(wake_up_app, 'interval', minutes=9)
 scheduler.start()
+# scheduler.add_job(update_embeddings, 'interval', hours=24)
 
 atexit.register(lambda: scheduler.shutdown())
+
 
 
 if __name__ == '__main__':
