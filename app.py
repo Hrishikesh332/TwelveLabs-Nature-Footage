@@ -427,15 +427,168 @@ def store_video_embedding_in_weaviate(video_id, embedding_data):
         app.logger.error(traceback.format_exc())
         return False
     
+@app.route('/api/debug-similar-videos/<video_id>', methods=['GET'])
+def api_debug_similar_videos(video_id):
 
-def find_similar_videos(video_id, limit=5):
-
-    if not weaviate_client:
-        app.logger.error("Weaviate client not initialized")
-        return []
+    debug_info = {
+        "video_id": video_id,
+        "steps": []
+    }
     
     try:
+        if not weaviate_client:
+            debug_info["error"] = "Weaviate client not initialized"
+            return jsonify(debug_info), 500
+        
+        debug_info["steps"].append("Weaviate client is initialized")
+        
+        video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
+        headers = {"x-api-key": API_KEY}
+        
+        video_response = requests.get(video_url, headers=headers)
+        debug_info["steps"].append(f"Twelve Labs API response status: {video_response.status_code}")
+        
+        if video_response.status_code != 200:
+            debug_info["error"] = f"Failed to get video info: {video_response.text}"
+            return jsonify(debug_info), 400
+            
+        video_data = video_response.json()
+        debug_info["video_info"] = {
+            "filename": video_data.get("system_metadata", {}).get("filename", "unknown"),
+            "has_user_metadata": "user_metadata" in video_data
+        }
+        
+        embedding_data = get_video_embedding(video_id)
+        debug_info["embedding_status"] = embedding_data.get("status")
+        
+        if embedding_data.get("status") != "ready":
+            debug_info["error"] = f"Embedding not ready: {embedding_data.get('error', 'Unknown error')}"
+            return jsonify(debug_info), 400
+        
+        segments = embedding_data.get("video_embedding", {}).get("segments", [])
+        debug_info["total_segments"] = len(segments)
+        
+        visual_embedding = None
+        segment_info = []
+        
+        for segment in segments:
+            seg_info = {
+                "embedding_option": segment.get("embedding_option"),
+                "embedding_scope": segment.get("embedding_scope"),
+                "has_float_vector": "float" in segment and len(segment.get("float", [])) > 0
+            }
+            segment_info.append(seg_info)
+            
+            if segment.get("embedding_option") == "visual-text" and segment.get("embedding_scope") == "video":
+                visual_embedding = segment.get("float", [])
+        
+        debug_info["segments_info"] = segment_info
+        
+        if not visual_embedding:
+            for segment in segments:
+                if segment.get("embedding_option") == "visual-text":
+                    visual_embedding = segment.get("float", [])
+                    debug_info["fallback"] = f"Using {segment.get('embedding_scope')} scope visual-text embedding"
+                    break
+        
+        if not visual_embedding:
+            debug_info["error"] = "No visual-text embedding found"
+            return jsonify(debug_info), 400
+        
+        debug_info["visual_embedding_found"] = True
+        debug_info["embedding_vector_length"] = len(visual_embedding)
+        
+        try:
+            collection = weaviate_client.collections.get("NatureVideo")
+            
+            existing_check = collection.query.fetch_objects(
+                filters=weaviate.classes.query.Filter.by_property("video_id").equal(video_id),
+                limit=1
+            )
+            
+            debug_info["video_in_weaviate"] = len(existing_check.objects) > 0
+            
+            similar_results = collection.query.near_vector(
+                near_vector=visual_embedding,
+                limit=11,
+                return_properties=["video_id", "filename", "embedding_type", "scope"]
+            )
+            
+            debug_info["similar_results_count"] = len(similar_results.objects)
+            
+            similar_videos = []
+            for obj in similar_results.objects:
+                props = obj.properties
+                if props.get("video_id") != video_id:
+                    similar_videos.append({
+                        "video_id": props.get("video_id"),
+                        "filename": props.get("filename"),
+                        "embedding_type": props.get("embedding_type"),
+                        "scope": props.get("scope")
+                    })
+            
+            debug_info["similar_videos_found"] = len(similar_videos)
+            debug_info["similar_videos_preview"] = similar_videos[:3]
+            
+        except Exception as e:
+            debug_info["weaviate_error"] = str(e)
+            
+        return jsonify(debug_info)
+        
+    except Exception as e:
+        debug_info["error"] = f"Unexpected error: {str(e)}"
+        import traceback
+        debug_info["traceback"] = traceback.format_exc()
+        return jsonify(debug_info), 500
 
+        
+
+
+
+
+def update_video_metadata(video_id, metadata):
+
+    try:
+        url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
+        headers = {
+            "x-api-key": API_KEY,
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "user_metadata": metadata
+        }
+        
+        response = requests.put(url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            app.logger.info(f"Successfully updated metadata for video {video_id}")
+            return True
+        else:
+            app.logger.error(f"Failed to update metadata for video {video_id}: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        app.logger.error(f"Error updating video metadata: {str(e)}")
+        return False
+
+
+def find_similar_videos(video_id, limit=10):
+
+    result = {
+        "videos": [],
+        "source": "weaviate",
+        "cache_age": None,
+        "embedding_scope": None
+    }
+    
+    if not weaviate_client:
+        app.logger.error("Weaviate client not initialized")
+        return result
+    
+    try:
+        app.logger.info(f"Finding similar videos for video_id: {video_id}")
+        
         video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
         headers = {"x-api-key": API_KEY}
         
@@ -448,43 +601,72 @@ def find_similar_videos(video_id, limit=5):
         if "similar_videos" in user_metadata and "similar_videos_timestamp" in user_metadata:
             timestamp = user_metadata.get("similar_videos_timestamp", 0)
             current_time = int(time.time())
+            cache_age = current_time - timestamp
             
-            if current_time - timestamp < 86400: 
-                return user_metadata.get("similar_videos", [])
+            app.logger.info(f"Found cached results. Cache age: {cache_age} seconds")
+            
+            if cache_age < 86400:
+                cached_videos = user_metadata.get("similar_videos", [])
+                app.logger.info(f"Returning {len(cached_videos)} similar videos from CACHE (age: {cache_age} seconds)")
+                result["videos"] = cached_videos
+                result["source"] = "cache"
+                result["cache_age"] = cache_age
+                return result
+            else:
+                app.logger.info(f"Cache expired (age: {cache_age} seconds > 86400). Fetching fresh results...")
+        else:
+            app.logger.info("No cached results found. Fetching fresh results...")
         
-
+        app.logger.info(f"Retrieving embeddings for video_id: {video_id}")
         embedding_data = get_video_embedding(video_id)
         
         if embedding_data.get("status") != "ready":
-            return [] 
+            app.logger.error(f"Embedding not ready for video_id: {video_id}")
+            return result
         
         segments = embedding_data.get("video_embedding", {}).get("segments", [])
         visual_embedding = None
+        embedding_scope = None
         
         for segment in segments:
             if segment.get("embedding_option") == "visual-text" and segment.get("embedding_scope") == "video":
                 visual_embedding = segment.get("float", [])
+                embedding_scope = "video"
+                app.logger.info("Found video scope visual-text embedding")
                 break
         
         if not visual_embedding:
-            return []  
+            for segment in segments:
+                if segment.get("embedding_option") == "visual-text":
+                    visual_embedding = segment.get("float", [])
+                    embedding_scope = "clip"
+                    app.logger.info("Using clip scope visual-text embedding (fallback)")
+                    break
         
+        if not visual_embedding:
+            app.logger.error("No visual-text embedding found")
+            return result
+        
+        app.logger.info(f"Storing/updating embedding in Weaviate for video_id: {video_id}")
         store_video_embedding_in_weaviate(video_id, embedding_data)
         
-        results = weaviate_client.query.get(
-            "NatureVideo", 
-            ["video_id", "filename"]
-        ).with_near_vector({
-            "vector": visual_embedding
-        }).with_limit(limit + 1).do() 
+        collection = weaviate_client.collections.get("NatureVideo")
+        
+        app.logger.info(f"Searching Weaviate for similar videos (limit: {limit + 1})")
+        results = collection.query.near_vector(
+            near_vector=visual_embedding,
+            limit=limit + 1, 
+            return_properties=["video_id", "filename"]
+        )
         
         similar_videos = []
         
-        for result in results.get("data", {}).get("Get", {}).get("NatureVideo", []):
-            result_video_id = result.get("video_id")
+        app.logger.info(f"Weaviate returned {len(results.objects)} results")
+        
+        for result_obj in results.objects:
+            result_video_id = result_obj.properties.get("video_id")
             
             if result_video_id != video_id:
-
                 video_detail_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{result_video_id}"
                 video_detail_response = requests.get(video_detail_url, headers=headers)
                 
@@ -501,7 +683,7 @@ def find_similar_videos(video_id, limit=5):
                     
                     similar_videos.append({
                         "video_id": result_video_id,
-                        "filename": result.get("filename"),
+                        "filename": result_obj.properties.get("filename"),
                         "video_url": video_url,
                         "thumbnail_url": thumbnail_url
                     })
@@ -509,35 +691,53 @@ def find_similar_videos(video_id, limit=5):
                     if len(similar_videos) >= limit:
                         break
         
+        app.logger.info(f"Found {len(similar_videos)} similar videos from WEAVIATE")
+        
         if similar_videos:
             metadata = {
                 "similar_videos": similar_videos,
                 "similar_videos_timestamp": int(time.time())
             }
-            update_video_metadata(video_id, metadata)
+            
+            success = update_video_metadata(video_id, metadata)
+            
+            if success:
+                app.logger.info(f"Successfully cached {len(similar_videos)} similar videos for video_id: {video_id}")
+            else:
+                app.logger.warning(f"Failed to cache similar videos for video_id: {video_id}")
+        else:
+            app.logger.warning(f"No similar videos found for video_id: {video_id}")
         
-        return similar_videos
+        result["videos"] = similar_videos
+        result["embedding_scope"] = embedding_scope
+        return result
         
     except Exception as e:
         app.logger.error(f"Error finding similar videos: {str(e)}")
-        return []
-    
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return result
+
 
 @app.route('/api/similar-videos/<video_id>', methods=['GET'])
 def api_get_similar_videos(video_id):
-
-    limit = request.args.get('limit', 10, type=int)
+    limit = request.args.get('limit', 6, type=int)
     
-    similar_videos = find_similar_videos(video_id, limit)
+    result = find_similar_videos(video_id, limit)
     
-    return jsonify({
+    response = {
         "success": True,
         "video_id": video_id,
-        "similar_videos": similar_videos
-    })
-
-
-
+        "similar_videos": result["videos"],
+        "source": result["source"],
+        "embedding_scope": result.get("embedding_scope")
+    }
+    
+    if result["source"] == "cache" and result["cache_age"] is not None:
+        response["cache_age_seconds"] = result["cache_age"]
+        response["cache_age_readable"] = f"{result['cache_age'] // 3600} hours {(result['cache_age'] % 3600) // 60} minutes"
+    
+    return jsonify(response)
 
 
 @app.route('/api/batch-embed', methods=['POST'])
