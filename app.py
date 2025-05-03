@@ -13,12 +13,16 @@ from flask_cors import CORS
 
 from weaviate.util import generate_uuid5
 
+import time
 
 import weaviate
 from weaviate.auth import AuthApiKey
 from weaviate.classes.config import Configure, Property, DataType, VectorDistances
 # from weaviate.collections import Collection
 
+
+import weaviate
+from weaviate.classes.query import Filter
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
@@ -126,10 +130,9 @@ if weaviate_client:
     create_videos_schema()
 
 
+
 def get_video_embedding(video_id):
-
     try:
-
         video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
         headers = {"x-api-key": API_KEY}
         
@@ -137,8 +140,17 @@ def get_video_embedding(video_id):
             "embedding_option": ["visual-text", "audio"]
         }
         
-        app.logger.info(f"Retrieving video information with embeddings for {video_id}")
+        app.logger.info(f"Retrieving video information with both visual-text and audio embeddings for {video_id}")
         video_response = requests.get(video_url, headers=headers, params=params)
+
+        if video_response.status_code == 404 and "embed_no_embeddings_found" in video_response.text and "audio" in video_response.text:
+            app.logger.warning(f"No audio embeddings found for video {video_id}, retrying with visual-text only")
+            
+            params = {
+                "embedding_option": ["visual-text"]
+            }
+            
+            video_response = requests.get(video_url, headers=headers, params=params)
         
         if video_response.status_code != 200:
             error_msg = f"API error: {video_response.status_code} - {video_response.text}"
@@ -169,7 +181,6 @@ def get_video_embedding(video_id):
         app.logger.error(f"Error getting video embedding: {error_msg}")
         track_embedding_status(video_id, "error", None, error_msg)
         return {"status": "error", "error": error_msg}
-    
 
 def track_embedding_status(video_id, status, task_id=None, error=None):
 
@@ -290,7 +301,6 @@ def api_recreate_schema():
 
 
 
-
 def store_video_embedding_in_weaviate(video_id, embedding_data):
 
     app.logger.info(f"Storing embeddings for video {video_id}")
@@ -343,8 +353,8 @@ def store_video_embedding_in_weaviate(video_id, embedding_data):
                 segments = embedding_info.get("video_embedding", {}).get("segments", [])
         
         if not segments:
-            app.logger.error(f"No embedding segments found for video {video_id}")
-            return False
+            app.logger.warning(f"No embedding segments found for video {video_id}")
+            return successful_inserts > 0
         
         app.logger.info(f"Found {len(segments)} embedding segments")
         
@@ -417,8 +427,6 @@ def store_video_embedding_in_weaviate(video_id, embedding_data):
         app.logger.error(traceback.format_exc())
         return False
     
-
-
 
 def find_similar_videos(video_id, limit=5):
 
@@ -531,19 +539,27 @@ def api_get_similar_videos(video_id):
 
 
 
+
 @app.route('/api/batch-embed', methods=['POST'])
 def api_batch_embed_videos():
-
     try:
-
         data = request.get_json() or {}
-        limit = data.get('limit', 100)
+        page_size = min(50, data.get('page_size', 50))  
+        max_pages = data.get('max_pages', 0)  # 0 means process all pages
+        delay_between_pages = data.get('delay_seconds', 2) 
         
-        videos_response = list_videos(page=1, page_limit=limit)
-        if not videos_response or 'data' not in videos_response:
+
+        initial_response = list_videos(page=1, page_limit=page_size)
+        if not initial_response or 'page_info' not in initial_response:
             return jsonify({"error": "Failed to retrieve videos"}), 500
         
-        video_ids = [video['_id'] for video in videos_response['data']]
+        total_pages = initial_response['page_info']['total_page']
+        total_videos = initial_response['page_info']['total_results']
+        
+        if max_pages > 0:
+            total_pages = min(total_pages, max_pages)
+            
+        app.logger.info(f"Starting batch embedding for {total_videos} videos across {total_pages} pages")
         
         already_embedded = set()
         if weaviate_client:
@@ -560,75 +576,115 @@ def api_batch_embed_videos():
             except Exception as e:
                 app.logger.error(f"Error checking existing embeddings: {str(e)}")
         
-        results = []
-        for video_id in video_ids:
-            if video_id in already_embedded:
-                app.logger.info(f"Skipping video {video_id} - already embedded")
-                track_embedding_status(video_id, "skipped", None, "Already embedded")
-                results.append({
-                    "video_id": video_id,
-                    "status": "skipped",
-                    "reason": "Already embedded"
-                })
-                continue
-                
-            try:
-                embedding_data = get_video_embedding(video_id)
-
-
-                
-                if embedding_data.get("status") == "ready":
- 
-                    success = store_video_embedding_in_weaviate(video_id, embedding_data)
-                    
-                    status = "stored" if success else "failed"
-                    track_embedding_status(
-                        video_id, 
-                        status, 
-                        video_id, 
-                        None if success else "Failed to store in Weaviate"
-                    )
-                    
-                    results.append({
-                        "video_id": video_id,
-                        "status": status,
-                        "embedding":embedding_data
-                    })
-                else:
-                    track_embedding_status(
-                        video_id, 
-                        embedding_data.get("status", "unknown"), 
-                        None, 
-                        embedding_data.get("error")
-                    )
-                    
-                    results.append({
-                        "video_id": video_id,
-                        "status": embedding_data.get("status", "unknown"),
-                        "error": embedding_data.get("error")
-                    })
-            except Exception as e:
-                error_msg = str(e)
-                app.logger.error(f"Error processing video {video_id}: {error_msg}")
-                track_embedding_status(video_id, "error", None, error_msg)
-                results.append({
-                    "video_id": video_id,
-                    "status": "error",
-                    "error": error_msg
-                })
-        
+        all_results = []
         summary_report = {
-            "total": len(video_ids),
-            "skipped": sum(1 for r in results if r.get("status") == "skipped"),
-            "stored": sum(1 for r in results if r.get("status") == "stored"),
-            "processing": sum(1 for r in results if r.get("status") == "processing"),
-            "failed": sum(1 for r in results if r.get("status") == "failed" or r.get("status") == "error"),
+            "total": 0,
+            "skipped": 0,
+            "stored": 0,
+            "processing": 0,
+            "failed": 0,
         }
+        
+        for current_page in range(1, total_pages + 1):
+            app.logger.info(f"Processing page {current_page} of {total_pages}")
+            
+            if current_page == 1:
+                videos_response = initial_response
+            else:
+                if current_page > 1 and delay_between_pages > 0:
+                    time.sleep(delay_between_pages)
+                
+                videos_response = list_videos(page=current_page, page_limit=page_size)
+            
+            if not videos_response or 'data' not in videos_response:
+                app.logger.error(f"Failed to retrieve videos for page {current_page}")
+                continue
+            
+            video_ids = [video['_id'] for video in videos_response['data']]
+            page_results = []
+            
+            for video_id in video_ids:
+                summary_report["total"] += 1
+                
+                if video_id in already_embedded:
+                    app.logger.info(f"Skipping video {video_id} - already embedded")
+                    track_embedding_status(video_id, "skipped", None, "Already embedded")
+                    page_results.append({
+                        "video_id": video_id,
+                        "status": "skipped",
+                        "reason": "Already embedded"
+                    })
+                    summary_report["skipped"] += 1
+                    continue
+                    
+                try:
+                    embedding_data = get_video_embedding(video_id)
+                    
+                    if embedding_data.get("status") == "ready":
+                        success = store_video_embedding_in_weaviate(video_id, embedding_data)
+                        
+                        status = "stored" if success else "failed"
+                        track_embedding_status(
+                            video_id, 
+                            status, 
+                            video_id, 
+                            None if success else "Failed to store in Weaviate"
+                        )
+                        
+                        page_results.append({
+                            "video_id": video_id,
+                            "status": status
+                        })
+                        
+                        if success:
+                            summary_report["stored"] += 1
+                        else:
+                            summary_report["failed"] += 1
+                            
+                    else:
+                        track_embedding_status(
+                            video_id, 
+                            embedding_data.get("status", "unknown"), 
+                            None, 
+                            embedding_data.get("error")
+                        )
+                        
+                        page_results.append({
+                            "video_id": video_id,
+                            "status": embedding_data.get("status", "unknown"),
+                            "error": embedding_data.get("error")
+                        })
+                        
+                        if embedding_data.get("status") == "processing":
+                            summary_report["processing"] += 1
+                        else:
+                            summary_report["failed"] += 1
+                            
+                except Exception as e:
+                    error_msg = str(e)
+                    app.logger.error(f"Error processing video {video_id}: {error_msg}")
+                    track_embedding_status(video_id, "error", None, error_msg)
+                    page_results.append({
+                        "video_id": video_id,
+                        "status": "error",
+                        "error": error_msg
+                    })
+                    summary_report["failed"] += 1
+            
+            all_results.extend(page_results)
+            
+            app.logger.info(f"Completed page {current_page}/{total_pages}: " +
+                           f"Processed {len(page_results)} videos, " +
+                           f"Total progress: {summary_report['stored']} stored, " +
+                           f"{summary_report['skipped']} skipped, " +
+                           f"{summary_report['processing']} processing, " +
+                           f"{summary_report['failed']} failed")
         
         return jsonify({
             "success": True,
             "summary": summary_report,
-            "results": results
+            "pages_processed": total_pages,
+            "results": all_results
         })
         
     except Exception as e:
@@ -636,6 +692,8 @@ def api_batch_embed_videos():
         import traceback
         app.logger.error(traceback.format_exc())
         return jsonify({"error": f"Batch embedding failed: {str(e)}"}), 500
+
+
 
 def update_embeddings():
     app.logger.info("Starting scheduled embedding update")
