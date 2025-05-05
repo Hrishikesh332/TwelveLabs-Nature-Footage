@@ -107,8 +107,7 @@ def test_lambda():
         return
     
     if not video_id:
-        print("Error: TEST_VIDEO_ID not found in .env file")
-        print("Please add TEST_VIDEO_ID=your_video_id to your .env file")
+        print("Please add VIDEO_ID=your_video_id to your .env file")
         return
     
     print(f"API key length: {len(api_key)} characters")
