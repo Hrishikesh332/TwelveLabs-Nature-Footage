@@ -1243,6 +1243,146 @@ def api_analyze_video(video_id):
     
     return jsonify({"error": "Failed to analyze video"}), 500
 
+
+@app.route('/api/search', methods=['POST'])
+def api_search_videos():
+    data = request.get_json() or {}
+    
+    query_text = data.get('query_text', '')
+    search_options = data.get('options', ['visual'])
+    page_limit = data.get('page_limit', 15)  
+    
+    if not query_text:
+        return jsonify({"error": "Search query text is required"}), 400
+    
+    try:
+        client = TwelveLabs(api_key=API_KEY)
+        
+        search_params = {
+            "index_id": INDEX_ID,
+            "query_text": query_text,
+            "options": search_options,
+            "threshold": "high", 
+            "page_limit": page_limit, 
+            "sort_option": "score"
+        }
+        
+        search_results = client.search.query(**search_params)
+        
+        processed_results = process_search_results(search_results)
+        
+        return jsonify({
+            "success": True,
+            "query": query_text,
+            "options": search_options,
+            "results": processed_results["results"],
+            "pagination": processed_results["pagination"]
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error searching videos: {str(e)}")
+        return jsonify({"error": f"Failed to search videos: {str(e)}"}), 500
+
+@app.route('/api/search/next', methods=['POST'])
+def api_search_next_page():
+    data = request.get_json() or {}
+    
+    page_token = data.get('page_token')
+    
+    if not page_token:
+        return jsonify({"error": "Page token is required"}), 400
+    
+    try:
+        client = TwelveLabs(api_key=API_KEY)
+        
+        search_results = client.search.by_page_token(page_token=page_token)
+        
+        processed_results = process_search_results(search_results)
+        
+        return jsonify({
+            "success": True,
+            "results": processed_results["results"],
+            "pagination": processed_results["pagination"]
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error fetching next page: {str(e)}")
+        return jsonify({"error": f"Failed to fetch next page: {str(e)}"}), 500
+
+def process_search_results(search_results):
+
+    results = []
+    
+    for clip in search_results.data:
+        video_id = clip.video_id
+        
+        video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
+        headers = {"x-api-key": API_KEY}
+        
+        try:
+            video_response = requests.get(video_url, headers=headers)
+            video_response.raise_for_status()
+            video_data = video_response.json()
+            
+            video_url = None
+            if "hls" in video_data and "video_url" in video_data["hls"]:
+                video_url = video_data["hls"]["video_url"]
+            
+            thumbnail_url = clip.thumbnail_url
+            if not thumbnail_url and "hls" in video_data and "thumbnail_urls" in video_data["hls"] and video_data["hls"]["thumbnail_urls"]:
+                thumbnail_url = video_data["hls"]["thumbnail_urls"][0]
+            
+            filename = video_data.get("system_metadata", {}).get("filename", "Unknown")
+            
+            user_metadata = video_data.get("user_metadata", {})
+            s3_proxy_url = user_metadata.get("s3_proxy_url")
+            
+            results.append({
+                "video_id": video_id,
+                "score": clip.score,
+                "start": clip.start,
+                "end": clip.end,
+                "confidence": clip.confidence,
+                "video_url": s3_proxy_url or video_url,
+                "thumbnail_url": thumbnail_url,
+                "filename": filename
+            })
+            
+        except Exception as e:
+            app.logger.error(f"Error fetching video details for {video_id}: {str(e)}")
+            results.append({
+                "video_id": video_id,
+                "score": clip.score,
+                "start": clip.start,
+                "end": clip.end,
+                "confidence": clip.confidence,
+                "video_url": None,
+                "thumbnail_url": clip.thumbnail_url
+            })
+    
+    page_info = search_results.page_info
+    
+    pagination = {
+        "total_results": page_info.total_results,
+        "limit_per_page": page_info.limit_per_page,
+        "next_page_token": page_info.next_page_token,
+        "prev_page_token": page_info.prev_page_token,
+        "has_more": page_info.next_page_token is not None
+    }
+    
+
+    if pagination["total_results"] > 0 and pagination["limit_per_page"] > 0:
+        pagination["total_pages"] = (pagination["total_results"] + pagination["limit_per_page"] - 1) // pagination["limit_per_page"]
+    else:
+        pagination["total_pages"] = 1
+    
+    return {
+        "results": results,
+        "pagination": pagination
+    }
+
+
+
 @app.route('/api/batch-analyze', methods=['POST'])
 def api_batch_analyze():
 
@@ -1393,106 +1533,6 @@ def api_update_metadata(video_id):
         })
     
     return jsonify({"error": "Failed to update metadata"}), 500
-
-
-@app.route('/api/search', methods=['POST'])
-def api_search_videos():
-    data = request.get_json() or {}
-    
-    query_text = data.get('query_text', '')
-    search_options = data.get('options', ['visual'])
-    page = data.get('page', 1)
-    page_token = data.get('page_token')
-    page_limit = 15 
-    
-    if not query_text:
-        return jsonify({"error": "Search query text is required"}), 400
-    
-    try:
-        client = TwelveLabs(api_key=API_KEY)
-        
-
-        search_params = {
-            "index_id": INDEX_ID,
-            "query_text": query_text,
-            "options": search_options,
-            "threshold": "high", 
-            "page_limit": page_limit, 
-            "sort_option": "score", 
-        }
-        
-        if page_token:
-            search_params["page_token"] = page_token
-        
-        search_results = client.search.query(**search_params)
-        
-        results = []
-        for clip in search_results.data:
-            video_id = clip.video_id
-            
-            video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
-            headers = {"x-api-key": API_KEY}
-            
-            try:
-                video_response = requests.get(video_url, headers=headers)
-                video_response.raise_for_status()
-                video_data = video_response.json()
-                
-                video_url = None
-                if "hls" in video_data and "video_url" in video_data["hls"]:
-                    video_url = video_data["hls"]["video_url"]
-                
-                thumbnail_url = clip.thumbnail_url
-                if not thumbnail_url and "hls" in video_data and "thumbnail_urls" in video_data["hls"] and video_data["hls"]["thumbnail_urls"]:
-                    thumbnail_url = video_data["hls"]["thumbnail_urls"][0]
-                
-                filename = video_data.get("system_metadata", {}).get("filename")
-                
-                results.append({
-                    "video_id": video_id,
-                    "score": clip.score,
-                    "start": clip.start,
-                    "end": clip.end,
-                    "confidence": clip.confidence,
-                    "video_url": video_url,
-                    "thumbnail_url": thumbnail_url,
-                    "filename": filename
-                })
-            except Exception as e:
-                app.logger.error(f"Error fetching video details for {video_id}: {str(e)}")
-                results.append({
-                    "video_id": video_id,
-                    "score": clip.score,
-                    "start": clip.start,
-                    "end": clip.end,
-                    "confidence": clip.confidence,
-                    "video_url": None,
-                    "thumbnail_url": clip.thumbnail_url
-                })
-        
-        total_results = search_results.page_info.total_results
-        limit_per_page = search_results.page_info.limit_per_page
-        next_page_token = search_results.page_info.next_page_token
-
-        total_pages = (total_results + limit_per_page - 1) // limit_per_page if total_results > 0 else 1
-        
-        return jsonify({
-            "success": True,
-            "query": query_text,
-            "options": search_options,
-            "results": results,
-            "pagination": {
-                "page": page,
-                "total_results": total_results,
-                "total_pages": total_pages,
-                "next_page_token": next_page_token,
-                "has_more": next_page_token is not None
-            }
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Error searching videos: {str(e)}")
-        return jsonify({"error": f"Failed to search videos: {str(e)}"}), 500
 
 
 def wake_up_app():
