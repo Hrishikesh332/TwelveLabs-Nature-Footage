@@ -96,3 +96,29 @@ curl -X POST http://localhost:5000/api/search \
 ```
 
 
+
+### Creation of the Collection
+
+```bash
+curl -X POST http://localhost:5000/api/recreate-schema
+
+```
+
+
+
+### Batch Embedding
+
+```bash
+curl -X POST http://localhost:5000/api/batch-embed \
+  -H "Content-Type: application/json" \
+  -d '{"page_size": 50, "max_pages": 20, "delay_seconds": 65}'
+
+```
+
+
+### Similar Videos
+
+```bash
+curl http://localhost:5000/api/similar-videos/<video_id>
+
+```
