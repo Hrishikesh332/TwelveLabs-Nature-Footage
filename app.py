@@ -1244,6 +1244,9 @@ def api_analyze_video(video_id):
     return jsonify({"error": "Failed to analyze video"}), 500
 
 
+
+
+
 @app.route('/api/search', methods=['POST'])
 def api_search_videos():
     data = request.get_json() or {}
@@ -1251,37 +1254,123 @@ def api_search_videos():
     query_text = data.get('query_text', '')
     search_options = data.get('options', ['visual'])
     page_limit = data.get('page_limit', 15)  
+    threshold = data.get('threshold', 'high')
     
     if not query_text:
         return jsonify({"error": "Search query text is required"}), 400
     
     try:
+        app.logger.info(f"Search request received: query={query_text}, options={search_options}")
+        
         client = TwelveLabs(api_key=API_KEY)
         
         search_params = {
             "index_id": INDEX_ID,
             "query_text": query_text,
             "options": search_options,
-            "threshold": "high", 
-            "page_limit": page_limit, 
+            "threshold": threshold,
+            "page_limit": page_limit,
+            "group_by": "video", 
             "sort_option": "score"
         }
         
+        app.logger.info(f"Searching with params: {search_params}")
         search_results = client.search.query(**search_params)
         
-        processed_results = process_search_results(search_results)
+        results = []
+        for video in search_results.data:
+            video_id = getattr(video, 'id', None) or getattr(video, 'video_id', None)
+            
+            if not video_id:
+                continue
+            
+            video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
+            headers = {"x-api-key": API_KEY}
+            
+            try:
+                video_response = requests.get(video_url, headers=headers)
+                video_data = video_response.json()
+                
+                video_stream_url = None
+                if "hls" in video_data and "video_url" in video_data["hls"]:
+                    video_stream_url = video_data["hls"]["video_url"]
+                
+                thumbnail_url = getattr(video, 'thumbnail_url', None)
+                if not thumbnail_url and "hls" in video_data and "thumbnail_urls" in video_data["hls"] and video_data["hls"]["thumbnail_urls"]:
+                    thumbnail_url = video_data["hls"]["thumbnail_urls"][0]
+                
+                filename = video_data.get("system_metadata", {}).get("filename", "Unknown")
+                
+                clips = []
+                highest_clip_score = None
+                
+                for clip in getattr(video, 'clips', []):
+                    clip_score = getattr(clip, 'score', None)
+                    
+                    if clip_score is not None:
+                        if highest_clip_score is None or clip_score > highest_clip_score:
+                            highest_clip_score = clip_score
+                    
+                    clips.append({
+                        "start": getattr(clip, 'start', None),
+                        "end": getattr(clip, 'end', None),
+                        "score": clip_score,
+                        "confidence": getattr(clip, 'confidence', None),
+                        "thumbnail_url": getattr(clip, 'thumbnail_url', None)
+                    })
+
+                video_score = getattr(video, 'score', None)
+                if video_score is None and highest_clip_score is not None:
+                    video_score = highest_clip_score
+                
+                video_result = {
+                    "video_id": video_id,
+                    "score": video_score,
+                    "filename": filename,
+                    "video_url": video_stream_url,
+                    "thumbnail_url": thumbnail_url,
+                    "clips": clips
+                }
+                
+                results.append(video_result)
+                
+            except Exception as e:
+                app.logger.error(f"Error fetching video details: {str(e)}")
+                results.append({
+                    "video_id": video_id,
+                    "score": getattr(video, 'score', None),
+                    "thumbnail_url": getattr(video, 'thumbnail_url', None)
+                })
+        
+        page_info = search_results.page_info
+        pagination = {
+            "total_results": getattr(page_info, 'total_results', 0),
+            "limit_per_page": getattr(page_info, 'limit_per_page', 0),
+            "next_page_token": getattr(page_info, 'next_page_token', None),
+            "prev_page_token": getattr(page_info, 'prev_page_token', None),
+            "has_more": getattr(page_info, 'next_page_token', None) is not None
+        }
+        
+
+        if pagination["total_results"] > 0 and pagination["limit_per_page"] > 0:
+            pagination["total_pages"] = (pagination["total_results"] + pagination["limit_per_page"] - 1) // pagination["limit_per_page"]
+        else:
+            pagination["total_pages"] = 1
         
         return jsonify({
             "success": True,
             "query": query_text,
             "options": search_options,
-            "results": processed_results["results"],
-            "pagination": processed_results["pagination"]
+            "results": results,
+            "pagination": pagination
         })
         
     except Exception as e:
         app.logger.error(f"Error searching videos: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
         return jsonify({"error": f"Failed to search videos: {str(e)}"}), 500
+
 
 @app.route('/api/search/next', methods=['POST'])
 def api_search_next_page():
@@ -1293,93 +1382,89 @@ def api_search_next_page():
         return jsonify({"error": "Page token is required"}), 400
     
     try:
+
         client = TwelveLabs(api_key=API_KEY)
-        
         search_results = client.search.by_page_token(page_token=page_token)
         
-        processed_results = process_search_results(search_results)
+        results = []
+        for video in search_results.data:
+            video_id = getattr(video, 'id', None) or getattr(video, 'video_id', None)
+            
+            if not video_id:
+                continue
+            
+            video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
+            headers = {"x-api-key": API_KEY}
+            
+            try:
+                video_response = requests.get(video_url, headers=headers)
+                video_data = video_response.json()
+                
+                video_stream_url = None
+                if "hls" in video_data and "video_url" in video_data["hls"]:
+                    video_stream_url = video_data["hls"]["video_url"]
+                
+                thumbnail_url = getattr(video, 'thumbnail_url', None)
+                if not thumbnail_url and "hls" in video_data and "thumbnail_urls" in video_data["hls"] and video_data["hls"]["thumbnail_urls"]:
+                    thumbnail_url = video_data["hls"]["thumbnail_urls"][0]
+                
+                filename = video_data.get("system_metadata", {}).get("filename", "Unknown")
+                
+                clips = []
+                for clip in getattr(video, 'clips', []):
+                    clips.append({
+                        "start": getattr(clip, 'start', None),
+                        "end": getattr(clip, 'end', None),
+                        "score": getattr(clip, 'score', None),
+                        "confidence": getattr(clip, 'confidence', None),
+                        "thumbnail_url": getattr(clip, 'thumbnail_url', None)
+                    })
+                
+                video_result = {
+                    "video_id": video_id,
+                    "score": getattr(video, 'score', None),
+                    "filename": filename,
+                    "video_url": video_stream_url,
+                    "thumbnail_url": thumbnail_url, 
+                    "clips": clips
+                }
+                
+                results.append(video_result)
+                
+            except Exception as e:
+                app.logger.error(f"Error fetching video details: {str(e)}")
+                results.append({
+                    "video_id": video_id,
+                    "score": getattr(video, 'score', None),
+                    "thumbnail_url": getattr(video, 'thumbnail_url', None)
+                })
+        
+        page_info = search_results.page_info
+        pagination = {
+            "total_results": getattr(page_info, 'total_results', 0),
+            "limit_per_page": getattr(page_info, 'limit_per_page', 0),
+            "next_page_token": getattr(page_info, 'next_page_token', None),
+            "prev_page_token": getattr(page_info, 'prev_page_token', None),
+            "has_more": getattr(page_info, 'next_page_token', None) is not None
+        }
+        
+        if pagination["total_results"] > 0 and pagination["limit_per_page"] > 0:
+            pagination["total_pages"] = (pagination["total_results"] + pagination["limit_per_page"] - 1) // pagination["limit_per_page"]
+        else:
+            pagination["total_pages"] = 1
         
         return jsonify({
             "success": True,
-            "results": processed_results["results"],
-            "pagination": processed_results["pagination"]
+            "results": results,
+            "pagination": pagination
         })
         
     except Exception as e:
         app.logger.error(f"Error fetching next page: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
         return jsonify({"error": f"Failed to fetch next page: {str(e)}"}), 500
-
-def process_search_results(search_results):
-
-    results = []
     
-    for clip in search_results.data:
-        video_id = clip.video_id
-        
-        video_url = f"https://api.twelvelabs.io/v1.3/indexes/{INDEX_ID}/videos/{video_id}"
-        headers = {"x-api-key": API_KEY}
-        
-        try:
-            video_response = requests.get(video_url, headers=headers)
-            video_response.raise_for_status()
-            video_data = video_response.json()
-            
-            video_url = None
-            if "hls" in video_data and "video_url" in video_data["hls"]:
-                video_url = video_data["hls"]["video_url"]
-            
-            thumbnail_url = clip.thumbnail_url
-            if not thumbnail_url and "hls" in video_data and "thumbnail_urls" in video_data["hls"] and video_data["hls"]["thumbnail_urls"]:
-                thumbnail_url = video_data["hls"]["thumbnail_urls"][0]
-            
-            filename = video_data.get("system_metadata", {}).get("filename", "Unknown")
-            
-            user_metadata = video_data.get("user_metadata", {})
-            s3_proxy_url = user_metadata.get("s3_proxy_url")
-            
-            results.append({
-                "video_id": video_id,
-                "score": clip.score,
-                "start": clip.start,
-                "end": clip.end,
-                "confidence": clip.confidence,
-                "video_url": s3_proxy_url or video_url,
-                "thumbnail_url": thumbnail_url,
-                "filename": filename
-            })
-            
-        except Exception as e:
-            app.logger.error(f"Error fetching video details for {video_id}: {str(e)}")
-            results.append({
-                "video_id": video_id,
-                "score": clip.score,
-                "start": clip.start,
-                "end": clip.end,
-                "confidence": clip.confidence,
-                "video_url": None,
-                "thumbnail_url": clip.thumbnail_url
-            })
-    
-    page_info = search_results.page_info
-    
-    pagination = {
-        "total_results": page_info.total_results,
-        "limit_per_page": page_info.limit_per_page,
-        "next_page_token": page_info.next_page_token,
-        "prev_page_token": page_info.prev_page_token,
-        "has_more": page_info.next_page_token is not None
-    }
-    
-
-    if pagination["total_results"] > 0 and pagination["limit_per_page"] > 0:
-        pagination["total_pages"] = (pagination["total_results"] + pagination["limit_per_page"] - 1) // pagination["limit_per_page"]
-    else:
-        pagination["total_pages"] = 1
-    
-    return {
-        "results": results,
-        "pagination": pagination
-    }
 
 
 
