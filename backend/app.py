@@ -12,15 +12,15 @@ from config.settings import (
 )
 
 
-logging.basicConfig(
-    level=getattr(logging), # LOG_LEVEL
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        # logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# logging.basicConfig(
+#     level=getattr(logging), # LOG_LEVEL
+#     format='%(asctime)s - %(levelname)s - %(message)s',
+#     handlers=[
+#         # logging.FileHandler(LOG_FILE),
+#         logging.StreamHandler()
+#     ]
+# )
+# logger = logging.getLogger(__name__)
 
 def create_app():
 
