@@ -20,13 +20,13 @@ DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 PORT = int(os.getenv("PORT", "5000"))
 APP_URL = os.getenv("APP_URL", "http://localhost:5000")
 
-# EMBEDDING_STATUS_FILE = os.getenv("EMBEDDING_STATUS_FILE", "embedding_status.csv")
-# ANALYSIS_RESULTS_FILE = os.getenv("ANALYSIS_RESULTS_FILE", "video_analysis_results.csv")
-# DETAILED_ANALYSIS_RESULTS_FILE = os.getenv("DETAILED_ANALYSIS_RESULTS_FILE", "video_analysis_detailed_results.csv")
+EMBEDDING_STATUS_FILE = os.getenv("EMBEDDING_STATUS_FILE", "embedding_status.csv")
+ANALYSIS_RESULTS_FILE = os.getenv("ANALYSIS_RESULTS_FILE", "video_analysis_results.csv")
+DETAILED_ANALYSIS_RESULTS_FILE = os.getenv("DETAILED_ANALYSIS_RESULTS_FILE", "video_analysis_detailed_results.csv")
 
-# # Logging
-# LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-# LOG_FILE = os.getenv("LOG_FILE", "tracking/nature_footage.log")
+# Logging
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_FILE = os.getenv("LOG_FILE", "tracking/nature_footage.log")
 
 # Scheduler settings
 SCHEDULER_ENABLED = os.getenv("SCHEDULER_ENABLED", "True").lower() == "true"
