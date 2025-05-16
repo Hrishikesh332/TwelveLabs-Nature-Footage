@@ -7,20 +7,20 @@ import requests
 from datetime import datetime
 
 from config.settings import (
-    DEBUG, PORT, APP_URL,         #LOG_LEVEL, LOG_FILE,
+    DEBUG, PORT, APP_URL, LOG_LEVEL, LOG_FILE,
     SCHEDULER_ENABLED, PING_INTERVAL_MINUTES
 )
 
 
-# logging.basicConfig(
-#     level=getattr(logging), # LOG_LEVEL
-#     format='%(asctime)s - %(levelname)s - %(message)s',
-#     handlers=[
-#         # logging.FileHandler(LOG_FILE),
-#         logging.StreamHandler()
-#     ]
-# )
-# logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL),
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def create_app():
 
