@@ -1,0 +1,10 @@
+twelvelabs
+weaviate-client
+flask
+flask-cors
+boto3
+python-dotenv
+requests
+gunicorn
+apscheduler
+
