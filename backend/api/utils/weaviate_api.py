@@ -129,122 +129,75 @@ def recreate_videos_schema(vector_dimensions=None):
         return False
 
 def store_video_embedding(video_id, embedding_data, video_metadata=None):
-
     client = get_weaviate_client()
     if not client:
         logger.error("Weaviate client not initialized")
         return False
-    
+
     try:
-        logger.info(f"Storing embeddings for video {video_id}")
-        
-        # To check NatureVideo collection exists
+        logger.info(f"Storing embedding for video {video_id}")
+
         collections = client.collections.list_all()
         if "NatureVideo" not in collections:
             logger.warning("NatureVideo collection does not exist, creating it...")
             create_videos_schema()
-        
-        try:
-            collection = client.collections.get("NatureVideo")
-            logger.info("Successfully accessed NatureVideo collection")
-        except Exception as e:
-            logger.error(f"Failed to access NatureVideo collection: {str(e)}")
-            return False
-        
-        # Get video metadata if not provided
+
+        collection = client.collections.get("NatureVideo")
+
         if not video_metadata:
             from api.utils.twelvelabs_api import get_video_info
             video_metadata = get_video_info(video_id)
-        
-        # Extract metadata
+
         filename = video_metadata.get("system_metadata", {}).get("filename", "unknown")
-        duration = video_metadata.get("system_metadata", {}).get("duration", 0)
-        
-        if isinstance(duration, str):
-            duration = float(duration)
-        
-        logger.info(f"Video metadata: filename={filename}, duration={duration}")
-        
-        # Get embedding segments
-        segments = []
-        
-        if embedding_data and embedding_data.get("video_embedding"):
-            segments = embedding_data.get("video_embedding", {}).get("segments", [])
-        
-        if not segments and video_metadata:
-            embedding_info = video_metadata.get("embedding", {})
-            if embedding_info and "video_embedding" in embedding_info:
-                segments = embedding_info.get("video_embedding", {}).get("segments", [])
-        
-        if not segments:
-            logger.warning(f"No embedding segments found for video {video_id}")
+        duration = float(video_metadata.get("system_metadata", {}).get("duration", 0))
+
+        segments = embedding_data.get("video_embedding", {}).get("segments", [])
+
+        visual_segments = [s for s in segments if s.get("embedding_option") == "visual-text"]
+
+        segment = next((s for s in visual_segments if s.get("embedding_scope") == "video"), None)
+        if not segment and visual_segments:
+            segment = visual_segments[0]
+
+        if not segment:
+            logger.warning(f"No suitable visual-text embedding found for video {video_id}")
             return False
-        
-        logger.info(f"Found {len(segments)} embedding segments")
-        
-        if segments:
-            first_segment = segments[0]
-            vector = first_segment.get("float", [])
-            vector_dimensions = len(vector)
-            logger.info(f"First segment has {vector_dimensions} dimensions")
-        
-        successful_inserts = 0
-        failed_inserts = 0
-        
-        # Store each segment
-        for segment in segments:
-            try:
-                vector = segment.get("float", [])
-                embedding_type = segment.get("embedding_option", "unknown")
-                scope = segment.get("embedding_scope", "unknown")
-                start_time = segment.get("start_offset_sec", 0)
-                end_time = segment.get("end_offset_sec", duration)
-                
-                if isinstance(start_time, str):
-                    start_time = float(start_time)
-                if isinstance(end_time, str):
-                    end_time = float(end_time)
-                
-                if not vector:
-                    logger.warning(f"Empty vector for {embedding_type}/{scope} segment")
-                    continue
-                
-                properties = {
-                    "video_id": video_id,
-                    "filename": filename,
-                    "duration": float(duration),
-                    "embedding_type": embedding_type,
-                    "scope": scope,
-                    "start_time": float(start_time),
-                    "end_time": float(end_time)
-                }
-                
-                object_id = f"{video_id}_{embedding_type}_{scope}"
-                object_uuid = generate_uuid5(object_id)
-                
-                logger.info(f"Inserting {embedding_type}/{scope} vector with {len(vector)} dimensions")
-                
-                collection.data.insert(
-                    properties=properties,
-                    vector=vector,
-                    uuid=object_uuid
-                )
-                
-                logger.info(f"Successfully inserted {embedding_type}/{scope} embedding")
-                successful_inserts += 1
-                
-            except Exception as e:
-                logger.error(f"Failed to insert {embedding_type}/{scope} embedding: {str(e)}")
-                failed_inserts += 1
-        
-        logger.info(f"Inserted {successful_inserts} embeddings, failed {failed_inserts} embeddings")
-        
-        return successful_inserts > 0
-    
+
+        vector = segment.get("float", [])
+        if not vector:
+            logger.warning("Empty vector found")
+            return False
+
+        embedding_type = segment.get("embedding_option", "visual-text")
+        scope = segment.get("embedding_scope", "unknown")
+        start_time = float(segment.get("start_offset_sec", 0))
+        end_time = float(segment.get("end_offset_sec", duration))
+
+        properties = {
+            "video_id": video_id,
+            "filename": filename,
+            "duration": duration,
+            "embedding_type": embedding_type,
+            "scope": scope,
+            "start_time": start_time,
+            "end_time": end_time
+        }
+
+        object_id = f"{video_id}_{embedding_type}_{scope}"
+        object_uuid = generate_uuid5(object_id)
+
+        collection.data.insert(properties=properties, vector=vector, uuid=object_uuid)
+        logger.info(f"Stored visual embedding for video {video_id}")
+
+        return True
+
     except Exception as e:
-        logger.error(f"Error in store_video_embedding: {str(e)}")
+        logger.error(f"Error storing embedding: {str(e)}")
         logger.error(traceback.format_exc())
         return False
+
+
+
 
 def find_similar_videos(video_id, embedding_vector=None, limit=10):
     client = get_weaviate_client()
