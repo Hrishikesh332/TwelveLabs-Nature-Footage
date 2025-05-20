@@ -39,6 +39,14 @@ AI driven platform for **Nature Footage Search & Recommendations**, tapping into
 
 ---
 
+
+## Overview Workflow 
+
+<p align="center">
+  <img src="https://github.com/Hrishikesh332/TwelveLabs-Nature-Footage/blob/main/backend/src/NatureFootage_Workflow.png" alt="Nature Footage Overview" width="100%">
+</p>
+
+
 ## Folder Structure
 
 ```
