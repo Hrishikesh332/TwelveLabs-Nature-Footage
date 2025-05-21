@@ -1,0 +1,21 @@
+Analyze this video and provide detailed information in the following categories: 
+
+1. Shot: What type of camera shot is used? (e.g., Close Up, Medium Shot, Wide Shot)
+2. Subject: What is the main subject? Include specific details about:
+    - Type (Animal, Human, Object)
+    - Classification (Mammal, Bird, etc. if applicable)
+    - Species/Category (Primate, Car, etc.)
+    - Count (Single, Multiple)
+    - Specific identification (Capuchin Monkey, etc.)
+    - Color (Black, Brown, etc.)
+3. Action: What is the main action occurring? (e.g., display, groom, run)
+4. Environment: What is the setting? Include:
+    - Time (Day, Night)
+    - Location (forest, urban, indoor)
+    - Weather/Conditions (Rainy, Sunny)
+    - Position (Topside, Underwater)
+    - Climate (Tropical, Desert)
+5. Narrative Flow: Describe the sequence of events and how the scene develops over time
+6. Additional Details: Note any distinctive or unique elements, behaviors, or features
+
+Format the response as a structured JSON object with these categories. Do not include explanations, just the structured data.

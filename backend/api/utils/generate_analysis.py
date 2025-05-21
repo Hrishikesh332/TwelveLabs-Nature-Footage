@@ -5,6 +5,7 @@ import boto3
 from twelvelabs import TwelveLabs
 import time
 
+
 from config.settings import (
     API_KEY, 
     AWS_REGION, 
@@ -17,6 +18,7 @@ from api.utils.twelvelabs_api import normalize_structured_data, parse_unstructur
 
 logger = logging.getLogger(__name__)
 
+
 # Initialize Lambda client if credentials are available
 if all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION]):
     lambda_client = boto3.client(
@@ -28,6 +30,15 @@ if all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION]):
 else:
     lambda_client = None
     logger.warning("AWS credentials not set, Lambda client will not be available")
+
+
+def load_prompt(path="config/prompt.txt"):
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            return file.read().strip()
+    except FileNotFoundError:
+        return None
+    
 
 def analyze_video(video_id, prompt=None, use_lambda=True):
 
@@ -88,31 +99,9 @@ def analyze_video_with_lambda(video_id, prompt=None):
 def analyze_video_directly(video_id, prompt=None):
     try:
         logger.info(f"Analyzing video {video_id} directly with Pegasus model")
-        
-
-        prompt = """
-        Analyze this video and provide detailed information in the following categories: 
-        
-        1. Shot: What type of camera shot is used? (e.g., Close Up, Medium Shot, Wide Shot)
-        2. Subject: What is the main subject? Include specific details about:
-            - Type (Animal, Human, Object)
-            - Classification (Mammal, Bird, etc. if applicable)
-            - Species/Category (Primate, Car, etc.)
-            - Count (Single, Multiple)
-            - Specific identification (Capuchin Monkey, etc.)
-            - Color (Black, Brown, etc.)
-        3. Action: What is the main action occurring? (e.g., display, groom, run)
-        4. Environment: What is the setting? Include:
-            - Time (Day, Night)
-            - Location (forest, urban, indoor)
-            - Weather/Conditions (Rainy, Sunny)
-            - Position (Topside, Underwater)
-            - Climate (Tropical, Desert)
-        5. Narrative Flow: Describe the sequence of events and how the scene develops over time
-        6. Additional Details: Note any distinctive or unique elements, behaviors, or features
-        
-        Format the response as a structured JSON object with these categories. Do not include explanations, just the structured data.
-        """
+        prompt = load_prompt()
+        if not prompt:
+            raise ValueError("Prompt is not provided or not loaded")
         
         client = TwelveLabs(api_key=API_KEY)
         
