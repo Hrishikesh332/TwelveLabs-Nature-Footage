@@ -15,7 +15,7 @@ export default function Home() {
   const browseRef = useRef<HTMLDivElement>(null)
   const [highlightSearch, setHighlightSearch] = useState(false)
 
-  // To handle URL hash for direct navigation
+  // Add this useEffect to handle URL hash for direct navigation
   useEffect(() => {
     if (typeof window !== "undefined") {
       if (window.location.hash === "#browse") {
@@ -23,7 +23,7 @@ export default function Home() {
       }
     }
 
-    // Clear highlight after animation completes (Animation open up when the Explore More is clicked)
+    // Clear highlight after animation completes
     if (highlightSearch) {
       const timer = setTimeout(() => {
         setHighlightSearch(false)
@@ -33,9 +33,9 @@ export default function Home() {
   }, [highlightSearch])
 
   const browseCategories = [
-    { title: "Monkey", count: "87 videos", query: "monkey" },
-    { title: "Octopus", count: "64 videos", query: "octopus" },
-    { title: "Hibiscus Flower", count: "52 videos", query: "hibiscus flower" },
+    { title: "Monkey", count: "410 videos", query: "monkey", image: "monkey.png" },
+    { title: "Octopus", count: "340 videos", query: "octopus", image: "octopus.png" },
+    { title: "Hibiscus Flower", count: "142 videos", query: "hibiscus flower", image: "hibiscus.png" },
   ]
 
   const handleCategoryClick = (query: string) => {
@@ -156,7 +156,7 @@ export default function Home() {
                   style={{ animationDelay: "2s" }}
                 ></div>
 
-                {/* Video grid */}
+                {/* Video grid with enhanced container */}
                 <div className="rounded-2xl overflow-hidden shadow-xl border border-gray-100">
                   <VideoGrid />
                 </div>
@@ -183,12 +183,7 @@ export default function Home() {
                   onClick={() => handleCategoryClick(category.query)}
                 >
                   <div className="h-48 bg-gray-200 relative">
-                    <Image
-                      src={`/abstract-geometric-shapes.png?height=200&width=400&query=${category.title} nature`}
-                      alt={category.title}
-                      fill
-                      className="object-cover"
-                    />
+                    <Image src={`/${category.image}`} alt={category.title} fill className="object-cover" />
                     <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
                     <div className="absolute bottom-4 left-4">
                       <span className="px-3 py-1 bg-brand-teal-500 text-white text-sm rounded-full">
@@ -222,7 +217,7 @@ export default function Home() {
           </div>
         </section>
 
-        {/* Lower Banner */}
+        {/* Action section */}
         <section className="py-16 bg-gradient-to-r from-brand-teal-500 to-brand-green-500 text-white">
           <div className="container mx-auto px-4 text-center">
             <h2 className="text-3xl font-bold mb-6">Ready to Enhance Your Projects?</h2>
