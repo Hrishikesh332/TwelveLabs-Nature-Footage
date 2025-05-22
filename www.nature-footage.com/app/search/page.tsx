@@ -21,7 +21,6 @@ export default function SearchPage() {
   const [error, setError] = useState<string | null>(null)
   const [errorDetails, setErrorDetails] = useState<string | null>(null)
 
-  // Search Endpoint
   const API_ENDPOINT = `${BACKEND_URL}/api/search`
   const API_NEXT_PAGE_ENDPOINT = `${BACKEND_URL}/api/search/next`
 
@@ -36,19 +35,26 @@ export default function SearchPage() {
     if (storedResults && storedQuery === query && !initialLoading) {
       try {
         const parsedResults = JSON.parse(storedResults)
+        const storedPagination = sessionStorage.getItem("searchPagination")
+
+        // Use stored pagination if available
+        const pagination = storedPagination
+          ? JSON.parse(storedPagination)
+          : {
+              has_more: parsedResults.length >= 15, 
+              next_page_token: "", 
+              prev_page_token: null,
+              limit_per_page: 15,
+              total_pages: 1,
+              total_results: parsedResults.length || 0,
+            }
+
         const cachedSearchData = {
           success: true,
           query: query,
           options: ["visual"],
           results: parsedResults,
-          pagination: {
-            has_more: false,
-            next_page_token: "",
-            prev_page_token: null,
-            limit_per_page: 15,
-            total_pages: 1,
-            total_results: parsedResults.length || 0,
-          },
+          pagination: pagination,
         }
 
         setSearchData(cachedSearchData)
@@ -57,6 +63,7 @@ export default function SearchPage() {
         return
       } catch (err) {
         console.error("Error parsing cached results:", err)
+
       }
     }
 
@@ -64,7 +71,7 @@ export default function SearchPage() {
     setError(null)
     setErrorDetails(null)
 
-    // Update URL to remove loading=true
+    // Update URL to remove loading=true parameter
     if (searchParams.get("loading") === "true") {
       const newParams = new URLSearchParams(searchParams.toString())
       newParams.delete("loading")
@@ -99,7 +106,6 @@ export default function SearchPage() {
       const data = await response.json()
       console.log("Search results received:", data.results?.length || 0, "items")
 
-
       const processedData: SearchResponse = {
         success: true,
         query: data.query || query,
@@ -115,10 +121,10 @@ export default function SearchPage() {
         },
       }
 
-      // After successfully fetching results, store both results and query for caching
       if (processedData.results && processedData.results.length > 0) {
         sessionStorage.setItem("searchResults", JSON.stringify(processedData.results))
         sessionStorage.setItem("lastSearchQuery", query)
+        sessionStorage.setItem("searchPagination", JSON.stringify(processedData.pagination))
       }
 
       setSearchData(processedData)
@@ -131,6 +137,7 @@ export default function SearchPage() {
     }
   }
 
+  // Update the fetchNextPage function
   const fetchNextPage = async (pageToken: string) => {
     if (!pageToken) return
 
@@ -169,7 +176,7 @@ export default function SearchPage() {
       const sanitizedResults = (data.results || []).map((result) => {
         let score = result.score
         if (score === null || score === undefined) {
-          score = null 
+          score = null
         } else if (typeof score === "string") {
           const parsedScore = Number.parseFloat(score)
           score = isNaN(parsedScore) ? null : parsedScore
@@ -178,7 +185,6 @@ export default function SearchPage() {
         return {
           ...result,
           score: score,
-          // To Handle the clips array exists
           clips: Array.isArray(result.clips)
             ? result.clips.map((clip) => {
                 let clipScore = clip.score
@@ -201,30 +207,31 @@ export default function SearchPage() {
         }
       })
 
-      // We need to preserve the original query and options from the searchData for the next page
       if (searchData) {
         const updatedData = {
+          // Keep the original query and options
           query: searchData.query,
           options: searchData.options,
-
+          // Use the new pagination data
           pagination: data.pagination || {
             has_more: false,
             next_page_token: "",
             total_pages: 1,
             total_results: 0,
           },
-          // Append the new results to the existing ones
           results: [...searchData.results, ...sanitizedResults],
           success: true,
         }
 
-        // Update sessionStorage with all results
+        // Update sessionStorage
         if (updatedData.results && updatedData.results.length > 0) {
           sessionStorage.setItem("searchResults", JSON.stringify(updatedData.results))
         }
 
         setSearchData(updatedData)
       } else {
+
+        // Fallback
         setSearchData({
           query: "",
           options: ["visual"],
@@ -269,7 +276,7 @@ export default function SearchPage() {
                 Nature<span className="text-brand-green-600">Footage</span>
               </span>
             </Link>
-            <div className="hidden md:block w-96">
+            <div className="hidden md:block">
               <SearchBar />
             </div>
           </div>

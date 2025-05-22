@@ -17,11 +17,11 @@ import {
   Globe,
   Layers,
   PuzzleIcon as PuzzlePiece,
+  Loader2,
 } from "lucide-react"
 import type { VideoResult, Clip } from "@/types/search"
 import { getFullVideoUrl } from "@/config/api-config"
 import VideoMetadata from "@/components/video-metadata"
-
 
 interface SimilarVideo {
   video_id: string
@@ -34,12 +34,12 @@ interface SimilarVideo {
   scope?: string
 }
 
-// Format similarity scores
+// Add this helper function to format similarity scores
 const formatSimilarityScore = (score: number | undefined): string => {
   if (score === undefined || score === null) return "N/A"
-  // If score is percent
+  // If score is already a percentage (e.g., 93.1)
   if (score > 1) return score.toFixed(1) + "%"
-  // If score is decimal
+  // If score is a decimal (e.g., 0.931)
   return (score * 100).toFixed(1) + "%"
 }
 
@@ -68,10 +68,15 @@ export default function VideoDetailPage() {
   const [videoErrors, setVideoErrors] = useState<{ [videoId: string]: string }>({})
   const [videoLoaded, setVideoLoaded] = useState<{ [videoId: string]: boolean }>({})
 
-  // ref to track play requests to prevent the race conditions
+  // Add a ref to track play requests to prevent race conditions
   const playRequestsRef = useRef<{ [videoId: string]: boolean }>({})
 
   const similarVideoRefs = useRef<{ [videoId: string]: HTMLVideoElement | null }>({})
+
+  const [isClipSwitching, setIsClipSwitching] = useState(false)
+  const [videoSourceLoaded, setVideoSourceLoaded] = useState(false)
+  const videoSourceRef = useRef<string | null>(null)
+  const clipSwitchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   // Fetch video data
   useEffect(() => {
@@ -80,9 +85,11 @@ export default function VideoDetailPage() {
 
       setIsLoading(true)
       setError(null)
+      setVideoSourceLoaded(false)
+      videoSourceRef.current = null
 
       try {
-        // Caching
+        // Get the last search query for the "Back to Search" button
         const storedQuery = sessionStorage.getItem("lastSearchQuery")
         if (storedQuery) {
           setLastSearchQuery(storedQuery)
@@ -93,7 +100,7 @@ export default function VideoDetailPage() {
           const parsedResults = JSON.parse(storedResults)
           setAllVideos(parsedResults)
 
-          // GET current video and its index
+          // Find the current video and its index
           const videoIndex = parsedResults.findIndex((v: VideoResult) => v.video_id === videoId)
           setCurrentVideoIndex(videoIndex)
 
@@ -125,7 +132,7 @@ export default function VideoDetailPage() {
             }
 
             setVideoData(video)
-            // Cache
+            // Cache this specific video
             sessionStorage.setItem(`video_${videoId}`, JSON.stringify(video))
 
             // Select the highest scoring clip by default
@@ -155,7 +162,6 @@ export default function VideoDetailPage() {
             console.log("Automatically loaded cached similar videos for:", videoId)
           } catch (err) {
             console.error("Error parsing cached similar videos:", err)
-            // Continue without loading similar videos if cache parsing fails
           }
         }
         setIsLoading(false)
@@ -174,11 +180,22 @@ export default function VideoDetailPage() {
     setVideoLoaded({})
     playRequestsRef.current = {}
 
-    // Reset similar video refs
     similarVideoRefs.current = {}
+
+
+    if (clipSwitchTimeoutRef.current) {
+      clearTimeout(clipSwitchTimeoutRef.current)
+      clipSwitchTimeoutRef.current = null
+    }
+
+    return () => {
+      if (clipSwitchTimeoutRef.current) {
+        clearTimeout(clipSwitchTimeoutRef.current)
+        clipSwitchTimeoutRef.current = null
+      }
+    }
   }, [videoId])
 
-  // Updated fetchSimilarVideos function without API key requirement
   const fetchSimilarVideos = async () => {
     if (!videoId) return
 
@@ -190,7 +207,6 @@ export default function VideoDetailPage() {
     playRequestsRef.current = {}
 
     try {
-      // Check if we have cached similar videos for this video
       const cachedSimilarVideos = sessionStorage.getItem(`similar_videos_${videoId}`)
       if (cachedSimilarVideos) {
         try {
@@ -201,13 +217,11 @@ export default function VideoDetailPage() {
           return
         } catch (err) {
           console.error("Error parsing cached similar videos:", err)
-          // Continue with normal fetch if cache parsing fails
         }
       }
 
       console.log(`Fetching similar videos for video ID: ${videoId}`)
 
-      // Use the deployed endpoint
       const response = await fetch(`/api/similar-videos/${videoId}`)
       console.log(`Similar videos API response status: ${response.status}`)
 
@@ -236,22 +250,16 @@ export default function VideoDetailPage() {
       console.log("Similar videos API response:", data)
 
       if (data.success && data.similar_videos) {
-        // Process the video URLs to ensure they're properly formatted
         const processedVideos = data.similar_videos.map((video: SimilarVideo) => {
-          // Make sure we have a valid video URL
           const videoUrl = video.video_url || ""
 
-          // Log the original URL for debugging
           console.log(`Original video URL for ${video.filename || video.video_id}:`, videoUrl)
-
-          // Get the full URL using our helper function
           const fullVideoUrl = getFullVideoUrl(videoUrl)
           console.log(`Processed video URL for ${video.filename || video.video_id}:`, fullVideoUrl)
 
           return {
             ...video,
             video_url: fullVideoUrl,
-            // Add source from the response
             source: data.source || "unknown",
           }
         })
@@ -272,20 +280,15 @@ export default function VideoDetailPage() {
     }
   }
 
-  // Handle playing a similar video with debounce to prevent race conditions
-  const playSimilarVideo = (videoId: string) => {
-    // If we're already playing this video, do nothing
-    if (playingSimilarVideoId === videoId) return
 
-    // Mark this video as having a pending play request
+  const playSimilarVideo = (videoId: string) => {
+    if (playingSimilarVideoId === videoId) return
     playRequestsRef.current[videoId] = true
 
-    // Pause any currently playing video
     if (playingSimilarVideoId && similarVideoRefs.current[playingSimilarVideoId]) {
       similarVideoRefs.current[playingSimilarVideoId]?.pause()
     }
 
-    // Set the new playing video
     setPlayingSimilarVideoId(videoId)
 
     // Find the video data
@@ -297,7 +300,6 @@ export default function VideoDetailPage() {
 
     // Play the new video with a small delay to avoid race conditions
     setTimeout(() => {
-      // Check if the play request is still valid (user hasn't moved mouse away)
       if (!playRequestsRef.current[videoId]) {
         console.log(`Play request for ${videoId} was cancelled`)
         return
@@ -322,10 +324,9 @@ export default function VideoDetailPage() {
           }
         })
       }
-    }, 100) // Small delay to avoid race conditions
+    }, 100) 
   }
 
-  // Handle stopping a similar video
   const stopSimilarVideo = (videoId: string) => {
     // Cancel any pending play requests for this video
     playRequestsRef.current[videoId] = false
@@ -339,63 +340,57 @@ export default function VideoDetailPage() {
     }
   }
 
-  // Update the video playback setup to use the new URL format
   useEffect(() => {
-    if (!videoData || !videoRef.current) return
+    if (!videoData) return
 
     const setupVideo = async () => {
       try {
-        // Clean up any previous playback
-        if (videoRef.current) {
-          videoRef.current.pause()
-          videoRef.current.currentTime = 0
-          setIsPlaying(false)
-        }
-
         const videoElement = videoRef.current
-        if (!videoElement || !videoData) return
+        if (!videoElement) return
 
-        // Get the full video URL by prefixing with backend URL
+        // Get the full video URL
         const fullVideoUrl = getFullVideoUrl(videoData.video_url)
-        console.log(`Setting up main video with URL: ${fullVideoUrl}`)
 
-        // Set the video source directly - no need for HLS
-        videoElement.src = fullVideoUrl
-        videoElement.load()
+        // Only set up the video source once per video
+        if (videoSourceRef.current !== fullVideoUrl) {
+          console.log(`Setting up main video with URL: ${fullVideoUrl}`)
 
-        // Add event listeners for better debugging
-        const handleLoadedData = () => {
-          console.log("Video loaded successfully:", fullVideoUrl)
-        }
+          setVideoSourceLoaded(false)
+          setIsPlaying(false)
 
-        const handleError = (e: any) => {
-          console.error("Video error:", e)
-          console.error("Video error details:", e.target.error)
-          setError(`Error loading video: ${e.target.error?.message || "Unknown error"}`)
-        }
+          // Set the video source
+          videoElement.src = fullVideoUrl
+          videoSourceRef.current = fullVideoUrl
+          videoElement.load()
 
-        videoElement.addEventListener("loadeddata", handleLoadedData)
-        videoElement.addEventListener("error", handleError)
+          // Add event listeners for the video element
+          const handleLoadedData = () => {
+            console.log("Video source loaded successfully")
+            setVideoSourceLoaded(true)
 
-        // If we have a selected clip, set the start time
-        if (selectedClip) {
-          videoElement.currentTime = selectedClip.start
-        }
-
-        // Add timeupdate listener to handle clip boundaries
-        const handleTimeUpdate = () => {
-          if (selectedClip && videoElement.currentTime >= selectedClip.end) {
-            videoElement.pause()
-            setIsPlaying(false)
+            // If we have a selected clip, set the start time
+            if (selectedClip) {
+              videoElement.currentTime = selectedClip.start
+            }
           }
-        }
 
-        videoElement.addEventListener("timeupdate", handleTimeUpdate)
+          const handleError = (e: any) => {
+            console.error("Video error:", e)
+            console.error("Video error details:", e.target.error)
+            setError(`Error loading video: ${e.target.error?.message || "Unknown error"}`)
+            setVideoSourceLoaded(false)
+          }
 
-        return () => {
-          videoElement.removeEventListener("loadeddata", handleLoadedData)
-          videoElement.removeEventListener("error", handleError)
-          videoElement.removeEventListener("timeupdate", handleTimeUpdate)
+          videoElement.addEventListener("loadeddata", handleLoadedData)
+          videoElement.addEventListener("error", handleError)
+
+          return () => {
+            videoElement.removeEventListener("loadeddata", handleLoadedData)
+            videoElement.removeEventListener("error", handleError)
+          }
+        } else if (selectedClip && videoSourceLoaded) {
+          // If the video source is already loaded and we're just switching clips
+          videoElement.currentTime = selectedClip.start
         }
       } catch (error) {
         console.error("Error setting up video:", error)
@@ -404,36 +399,72 @@ export default function VideoDetailPage() {
     }
 
     setupVideo()
+  }, [videoData])
 
-    return () => {
-      // Clean up
-      if (videoRef.current) {
-        videoRef.current.pause()
-        videoRef.current.src = ""
-        videoRef.current.load()
+  // Separate effect for handling clip changes
+  useEffect(() => {
+    if (!videoRef.current || !selectedClip || !videoSourceLoaded) return
+
+    console.log(`Switching to clip: ${selectedClip.start} - ${selectedClip.end}`)
+    setIsClipSwitching(true)
+
+    const videoElement = videoRef.current
+
+    // Set the current time to the clip start
+    videoElement.currentTime = selectedClip.start
+
+    const handleTimeUpdate = () => {
+      if (selectedClip && videoElement.currentTime >= selectedClip.end) {
+        videoElement.pause()
+        setIsPlaying(false)
       }
     }
-  }, [videoData, selectedClip])
 
-  // Handle play/pause
+    videoElement.addEventListener("timeupdate", handleTimeUpdate)
+
+    // Set a timeout to hide the switching indicator
+    clipSwitchTimeoutRef.current = setTimeout(() => {
+      setIsClipSwitching(false)
+    }, 500)
+
+    if (isPlaying) {
+      videoElement.play().catch((err) => {
+        console.error("Error playing video after clip switch:", err)
+        setIsPlaying(false)
+      })
+    }
+
+    return () => {
+      videoElement.removeEventListener("timeupdate", handleTimeUpdate)
+      if (clipSwitchTimeoutRef.current) {
+        clearTimeout(clipSwitchTimeoutRef.current)
+        clipSwitchTimeoutRef.current = null
+      }
+    }
+  }, [selectedClip, videoSourceLoaded])
+
   const togglePlayPause = () => {
-    if (!videoRef.current) return
+    if (!videoRef.current || !videoSourceLoaded) return
 
     if (isPlaying) {
       videoRef.current.pause()
+      setIsPlaying(false)
     } else {
-      // If we have a selected clip and we're past the end, reset to start
       if (selectedClip && videoRef.current.currentTime >= selectedClip.end) {
         videoRef.current.currentTime = selectedClip.start
       }
 
-      videoRef.current.play().catch((err) => {
-        console.error("Error playing video:", err)
-        setError("Failed to play video. Please try again.")
-      })
+      videoRef.current
+        .play()
+        .then(() => {
+          setIsPlaying(true)
+        })
+        .catch((err) => {
+          console.error("Error playing video:", err)
+          setError("Failed to play video. Please try again.")
+          setIsPlaying(false)
+        })
     }
-
-    setIsPlaying(!isPlaying)
   }
 
   // Format time (seconds) to MM:SS format
@@ -456,12 +487,11 @@ export default function VideoDetailPage() {
 
   // Get the highest score from clips if video score is null
   const getVideoScore = (video: VideoResult): number | null => {
-    // If video has a score, use it
+
     if (video.score !== undefined && video.score !== null) {
       return video.score
     }
 
-    // Otherwise, find the highest clip score
     if (video.clips && video.clips.length > 0) {
       const highestClipScore = Math.max(
         ...video.clips.map((clip) => (clip.score !== undefined && clip.score !== null ? clip.score : 0)),
@@ -481,14 +511,6 @@ export default function VideoDetailPage() {
   // Select a clip
   const handleSelectClip = (clip: Clip) => {
     setSelectedClip(clip)
-    if (videoRef.current) {
-      videoRef.current.currentTime = clip.start
-      if (isPlaying) {
-        videoRef.current.play().catch((err) => {
-          console.error("Error playing video after clip selection:", err)
-        })
-      }
-    }
   }
 
   // Navigate to previous video
@@ -675,6 +697,7 @@ export default function VideoDetailPage() {
             {/* Video player */}
             <div>
               <div className="relative aspect-video bg-black rounded-lg overflow-hidden">
+                {/* Video element */}
                 <video
                   ref={videoRef}
                   className="w-full h-full object-contain"
@@ -683,13 +706,19 @@ export default function VideoDetailPage() {
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}
                   onEnded={() => setIsPlaying(false)}
-                  onError={(e) => {
-                    console.error("Video error:", e)
-                    setError("Error loading video. The video might be unavailable or in an unsupported format.")
-                    // Don't block the UI, just show an error message
-                  }}
-                  onLoadedData={() => console.log("Video loaded successfully")}
                 />
+
+                {/* Loading overlay - show when video source is not loaded or clip is switching */}
+                {(!videoSourceLoaded || isClipSwitching) && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-40">
+                    <div className="flex flex-col items-center">
+                      <Loader2 className="h-10 w-10 text-white animate-spin mb-2" />
+                      <p className="text-white text-sm">
+                        {!videoSourceLoaded ? "Loading video..." : "Switching clip..."}
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Error message that doesn't block the UI */}
                 {error && (
@@ -726,22 +755,28 @@ export default function VideoDetailPage() {
                   </button>
                 )}
 
-                {/* Play/Pause overlay - still functional even with errors */}
-                <div
-                  className="absolute inset-0 flex items-center justify-center bg-black/20 cursor-pointer"
-                  onClick={togglePlayPause}
-                >
-                  <button
-                    className="p-4 bg-black/40 rounded-full hover:bg-black/60 transition-colors"
-                    aria-label={isPlaying ? "Pause video" : "Play video"}
+                {/* Play/Pause overlay - only show when video is loaded and not switching clips */}
+                {videoSourceLoaded && !isClipSwitching && (
+                  <div
+                    className="absolute inset-0 flex items-center justify-center bg-black/20 cursor-pointer z-20"
+                    onClick={togglePlayPause}
                   >
-                    {isPlaying ? <Pause className="h-10 w-10 text-white" /> : <Play className="h-10 w-10 text-white" />}
-                  </button>
-                </div>
+                    <button
+                      className="p-4 bg-black/40 rounded-full hover:bg-black/60 transition-colors"
+                      aria-label={isPlaying ? "Pause video" : "Play video"}
+                    >
+                      {isPlaying ? (
+                        <Pause className="h-10 w-10 text-white" />
+                      ) : (
+                        <Play className="h-10 w-10 text-white" />
+                      )}
+                    </button>
+                  </div>
+                )}
 
                 {/* Clip time indicator */}
-                {selectedClip && (
-                  <div className="absolute bottom-4 left-4 right-4 bg-black/60 text-white px-3 py-1 rounded-md text-sm">
+                {selectedClip && videoSourceLoaded && (
+                  <div className="absolute bottom-4 left-4 right-4 bg-black/60 text-white px-3 py-1 rounded-md text-sm z-30">
                     <div className="flex justify-between">
                       <span>
                         Clip: {formatTime(selectedClip.start)} - {formatTime(selectedClip.end)}
@@ -863,10 +898,10 @@ export default function VideoDetailPage() {
                       >
                         {/* Video container with fixed aspect ratio */}
                         <div className="relative aspect-video cursor-pointer">
-                          {/* Always use video element, but only play on hover */}
+                          {}
                           <video
                             ref={(el) => (similarVideoRefs.current[video.video_id] = el)}
-                            src={videoUrl} // Use the URL directly
+                            src={videoUrl} 
                             className="absolute inset-0 w-full h-full object-cover"
                             playsInline
                             muted
@@ -934,7 +969,7 @@ export default function VideoDetailPage() {
                             </div>
                           )}
 
-                          {/* Error message overlay - only show for non-interruption errors */}
+                          {/* Error message overlay - only show for non interruption errors */}
                           {hasError && !videoErrors[video.video_id].includes("interrupted") && (
                             <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-50">
                               <div className="text-center p-4">
@@ -967,7 +1002,6 @@ export default function VideoDetailPage() {
               </div>
             )}
 
-            {/* Error message for similar videos */}
             {similarError && (
               <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
                 <div className="flex items-start">
