@@ -129,7 +129,7 @@ export default function VideoDetailPage() {
                 const parsedVideo = JSON.parse(cachedVideo)
                 setVideoData(parsedVideo)
 
-                // Select the highest scoring clip by default
+                // Select the highest scoring clip by default if available
                 if (parsedVideo.clips && parsedVideo.clips.length > 0) {
                   const bestClip = parsedVideo.clips.reduce(
                     (best, current) => (current.score > best.score ? current : best),
@@ -160,9 +160,76 @@ export default function VideoDetailPage() {
               setSelectedClip(bestClip)
             }
           } else {
-            setError("Video not found. It may have been removed or is no longer available.")
+            // Video not found in search results - check if we have it in similar videos cache
+            const cachedSimilarVideos = sessionStorage.getItem(`similar_videos_${videoId}`)
+            if (cachedSimilarVideos) {
+              try {
+                const parsedSimilarVideos = JSON.parse(cachedSimilarVideos)
+                // Look for this video in the similar videos
+                const similarVideo = parsedSimilarVideos.find((v: SimilarVideo) => v.video_id === videoId)
+
+                if (similarVideo) {
+                  // Create a minimal VideoResult from the SimilarVideo data
+                  const minimalVideoData: VideoResult = {
+                    video_id: similarVideo.video_id,
+                    filename: similarVideo.filename || `Video_${similarVideo.video_id.substring(0, 8)}`,
+                    thumbnail_url: similarVideo.thumbnail_url || "",
+                    video_url: similarVideo.video_url,
+                    score: similarVideo.similarity_score
+                      ? similarVideo.similarity_score * 100
+                      : similarVideo.similarity_percentage
+                        ? similarVideo.similarity_percentage
+                        : 0,
+                    clips: [], // Initialize with empty clips array
+                  }
+
+                  setVideoData(minimalVideoData)
+                  // Cache this minimal data
+                  sessionStorage.setItem(`video_${videoId}`, JSON.stringify(minimalVideoData))
+                  setIsLoading(false)
+                  return
+                }
+              } catch (err) {
+                console.error("Error parsing cached similar videos:", err)
+              }
+            }
+
+            // If we still don't have data, create a minimal placeholder
+            const placeholderVideo: VideoResult = {
+              video_id: videoId,
+              filename: `Video_${videoId.substring(0, 8)}`,
+              thumbnail_url: "",
+              video_url: "",
+              score: 0,
+              clips: [],
+            }
+
+            setVideoData(placeholderVideo)
+            setError("Limited video information available. Some features may not work properly.")
           }
         } else {
+          const cachedVideo = sessionStorage.getItem(`video_${videoId}`)
+          if (cachedVideo) {
+            try {
+              const parsedVideo = JSON.parse(cachedVideo)
+              setVideoData(parsedVideo)
+              setIsLoading(false)
+              return
+            } catch (err) {
+              console.error("Error parsing cached video:", err)
+            }
+          }
+
+          const placeholderVideo: VideoResult = {
+            video_id: videoId,
+            filename: `Video_${videoId.substring(0, 8)}`,
+            thumbnail_url: "",
+            video_url: "",
+            score: 0,
+            clips: [],
+          }
+
+          setVideoData(placeholderVideo)
           setError("Video data not found. Please go back to search and try again.")
         }
       } catch (err) {
@@ -294,7 +361,8 @@ export default function VideoDetailPage() {
   }
 
   // Handle playing a similar video with debounce to prevent race conditions
-  const playSimilarVideo = (videoId: string) => 
+  const playSimilarVideo = (videoId: string) => {
+    // If we're already playing this video, do nothing
     if (playingSimilarVideoId === videoId) return
     playRequestsRef.current[videoId] = true
 
@@ -360,6 +428,12 @@ export default function VideoDetailPage() {
       try {
         const videoElement = videoRef.current
         if (!videoElement) return
+
+        if (!videoData.video_url) {
+          console.error("No video URL available for this video")
+          setError("No video URL available. This may be a placeholder or incomplete video record.")
+          return
+        }
 
         // Get the full video URL
         const fullVideoUrl = getFullVideoUrl(videoData.video_url)
@@ -592,7 +666,7 @@ export default function VideoDetailPage() {
       // Seek to clip start
       videoRef.current.currentTime = clip.start
 
-      // Highlight
+      // Add a brief highlight effect to the video container
       const videoContainer = videoRef.current.parentElement
       if (videoContainer) {
         videoContainer.classList.add("ring-4", "ring-brand-teal-500", "ring-opacity-70")
@@ -631,7 +705,7 @@ export default function VideoDetailPage() {
   }
 
   // Handle clicking on a similar video
-  const handleSimilarVideoClick = (videoId: string) => {
+  const handleSimilarVideoClick = (videoId: string, similarVideoData?: SimilarVideo) => {
     // If we have similar videos for the current video, make sure they're cached
     if (similarVideos.length > 0 && videoData) {
       try {
@@ -639,6 +713,40 @@ export default function VideoDetailPage() {
         sessionStorage.setItem(`similar_videos_${videoData.video_id}`, JSON.stringify(similarVideos))
       } catch (err) {
         console.error("Error caching similar videos:", err)
+      }
+    }
+
+    if (similarVideoData) {
+      try {
+        const minimalVideoData: VideoResult = {
+          video_id: similarVideoData.video_id,
+          filename: similarVideoData.filename || `Video_${similarVideoData.video_id.substring(0, 8)}`,
+          thumbnail_url: similarVideoData.thumbnail_url || "",
+          video_url: similarVideoData.video_url,
+          score: similarVideoData.similarity_score
+            ? similarVideoData.similarity_score * 100
+            : similarVideoData.similarity_percentage
+              ? similarVideoData.similarity_percentage
+              : 0,
+          clips: [],
+        }
+
+        sessionStorage.setItem(`video_${videoId}`, JSON.stringify(minimalVideoData))
+
+        const storedResults = sessionStorage.getItem("searchResults")
+        if (storedResults) {
+          try {
+            const parsedResults = JSON.parse(storedResults)
+            if (!parsedResults.some((v: VideoResult) => v.video_id === videoId)) {
+              parsedResults.push(minimalVideoData)
+              sessionStorage.setItem("searchResults", JSON.stringify(parsedResults))
+            }
+          } catch (err) {
+            console.error("Error updating search results cache:", err)
+          }
+        }
+      } catch (err) {
+        console.error("Error caching similar video data:", err)
       }
     }
 
@@ -1061,7 +1169,7 @@ export default function VideoDetailPage() {
                       <div
                         key={video.video_id}
                         className="relative overflow-hidden rounded-lg border border-gray-200 hover:shadow-lg transition-all duration-300"
-                        onClick={() => handleSimilarVideoClick(video.video_id)}
+                        onClick={() => handleSimilarVideoClick(video.video_id, video)}
                         onMouseEnter={() => {
                           setHoveredSimilarVideoId(video.video_id)
                           playSimilarVideo(video.video_id)
@@ -1134,7 +1242,7 @@ export default function VideoDetailPage() {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  handleSimilarVideoClick(video.video_id)
+                                  handleSimilarVideoClick(video.video_id, video)
                                 }}
                                 className="p-3 bg-black/40 rounded-full hover:bg-black/60 transition-colors"
                                 aria-label="View video details"
