@@ -1,5 +1,7 @@
 "use client"
 
+import type React from "react"
+
 import { useState, useEffect, useRef } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Image from "next/image"
@@ -18,11 +20,18 @@ import {
   Layers,
   PuzzleIcon as PuzzlePiece,
   Loader2,
+  Volume2,
+  VolumeX,
+  Maximize,
+  SkipBack,
+  SkipForward,
 } from "lucide-react"
 import type { VideoResult, Clip } from "@/types/search"
+// Import the config helper
 import { getFullVideoUrl } from "@/config/api-config"
 import VideoMetadata from "@/components/video-metadata"
 
+// Update the SimilarVideo interface to match the API response format
 interface SimilarVideo {
   video_id: string
   filename: string
@@ -73,10 +82,17 @@ export default function VideoDetailPage() {
 
   const similarVideoRefs = useRef<{ [videoId: string]: HTMLVideoElement | null }>({})
 
-  const [isClipSwitching, setIsClipSwitching] = useState(false)
   const [videoSourceLoaded, setVideoSourceLoaded] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [volume, setVolume] = useState(1)
+  const [isMuted, setIsMuted] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [showControls, setShowControls] = useState(true)
+  const [isDragging, setIsDragging] = useState(false)
   const videoSourceRef = useRef<string | null>(null)
-  const clipSwitchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const progressBarRef = useRef<HTMLDivElement | null>(null)
 
   // Fetch video data
   useEffect(() => {
@@ -162,6 +178,7 @@ export default function VideoDetailPage() {
             console.log("Automatically loaded cached similar videos for:", videoId)
           } catch (err) {
             console.error("Error parsing cached similar videos:", err)
+            // Continue without loading similar videos if cache parsing fails
           }
         }
         setIsLoading(false)
@@ -182,16 +199,11 @@ export default function VideoDetailPage() {
 
     similarVideoRefs.current = {}
 
-
-    if (clipSwitchTimeoutRef.current) {
-      clearTimeout(clipSwitchTimeoutRef.current)
-      clipSwitchTimeoutRef.current = null
-    }
-
     return () => {
-      if (clipSwitchTimeoutRef.current) {
-        clearTimeout(clipSwitchTimeoutRef.current)
-        clipSwitchTimeoutRef.current = null
+      // Clean up any pending timeouts when component unmounts
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current)
+        controlsTimeoutRef.current = null
       }
     }
   }, [videoId])
@@ -254,6 +266,7 @@ export default function VideoDetailPage() {
           const videoUrl = video.video_url || ""
 
           console.log(`Original video URL for ${video.filename || video.video_id}:`, videoUrl)
+
           const fullVideoUrl = getFullVideoUrl(videoUrl)
           console.log(`Processed video URL for ${video.filename || video.video_id}:`, fullVideoUrl)
 
@@ -280,9 +293,10 @@ export default function VideoDetailPage() {
     }
   }
 
-
+  // Handle playing a similar video with debounce to prevent race conditions
   const playSimilarVideo = (videoId: string) => {
     if (playingSimilarVideoId === videoId) return
+
     playRequestsRef.current[videoId] = true
 
     if (playingSimilarVideoId && similarVideoRefs.current[playingSimilarVideoId]) {
@@ -324,7 +338,7 @@ export default function VideoDetailPage() {
           }
         })
       }
-    }, 100) 
+    }, 100) // Small delay to avoid race conditions
   }
 
   const stopSimilarVideo = (videoId: string) => {
@@ -355,23 +369,42 @@ export default function VideoDetailPage() {
         if (videoSourceRef.current !== fullVideoUrl) {
           console.log(`Setting up main video with URL: ${fullVideoUrl}`)
 
+          // Reset state for new video
           setVideoSourceLoaded(false)
           setIsPlaying(false)
+          setCurrentTime(0)
+          setDuration(0)
 
-          // Set the video source
+          // Set the video source with preload optimization
           videoElement.src = fullVideoUrl
+          videoElement.preload = "metadata" // Load metadata first for faster initial load
           videoSourceRef.current = fullVideoUrl
           videoElement.load()
 
           // Add event listeners for the video element
-          const handleLoadedData = () => {
-            console.log("Video source loaded successfully")
+          const handleLoadedMetadata = () => {
+            console.log("Video metadata loaded")
+            setDuration(videoElement.duration)
             setVideoSourceLoaded(true)
 
             // If we have a selected clip, set the start time
             if (selectedClip) {
               videoElement.currentTime = selectedClip.start
             }
+          }
+
+          const handleTimeUpdate = () => {
+            if (!isDragging) {
+              setCurrentTime(videoElement.currentTime)
+            }
+          }
+
+          const handleLoadedData = () => {
+            console.log("Video data loaded successfully")
+          }
+
+          const handleCanPlay = () => {
+            console.log("Video can start playing")
           }
 
           const handleError = (e: any) => {
@@ -381,12 +414,25 @@ export default function VideoDetailPage() {
             setVideoSourceLoaded(false)
           }
 
+          const handleVolumeChange = () => {
+            setVolume(videoElement.volume)
+            setIsMuted(videoElement.muted)
+          }
+
+          videoElement.addEventListener("loadedmetadata", handleLoadedMetadata)
+          videoElement.addEventListener("timeupdate", handleTimeUpdate)
           videoElement.addEventListener("loadeddata", handleLoadedData)
+          videoElement.addEventListener("canplay", handleCanPlay)
           videoElement.addEventListener("error", handleError)
+          videoElement.addEventListener("volumechange", handleVolumeChange)
 
           return () => {
+            videoElement.removeEventListener("loadedmetadata", handleLoadedMetadata)
+            videoElement.removeEventListener("timeupdate", handleTimeUpdate)
             videoElement.removeEventListener("loadeddata", handleLoadedData)
+            videoElement.removeEventListener("canplay", handleCanPlay)
             videoElement.removeEventListener("error", handleError)
+            videoElement.removeEventListener("volumechange", handleVolumeChange)
           }
         } else if (selectedClip && videoSourceLoaded) {
           // If the video source is already loaded and we're just switching clips
@@ -399,48 +445,14 @@ export default function VideoDetailPage() {
     }
 
     setupVideo()
-  }, [videoData])
+  }, [videoData, isDragging])
 
-  // Separate effect for handling clip changes
+  // Handle clip selection - just seek to the clip start time
   useEffect(() => {
     if (!videoRef.current || !selectedClip || !videoSourceLoaded) return
 
-    console.log(`Switching to clip: ${selectedClip.start} - ${selectedClip.end}`)
-    setIsClipSwitching(true)
-
-    const videoElement = videoRef.current
-
-    // Set the current time to the clip start
-    videoElement.currentTime = selectedClip.start
-
-    const handleTimeUpdate = () => {
-      if (selectedClip && videoElement.currentTime >= selectedClip.end) {
-        videoElement.pause()
-        setIsPlaying(false)
-      }
-    }
-
-    videoElement.addEventListener("timeupdate", handleTimeUpdate)
-
-    // Set a timeout to hide the switching indicator
-    clipSwitchTimeoutRef.current = setTimeout(() => {
-      setIsClipSwitching(false)
-    }, 500)
-
-    if (isPlaying) {
-      videoElement.play().catch((err) => {
-        console.error("Error playing video after clip switch:", err)
-        setIsPlaying(false)
-      })
-    }
-
-    return () => {
-      videoElement.removeEventListener("timeupdate", handleTimeUpdate)
-      if (clipSwitchTimeoutRef.current) {
-        clearTimeout(clipSwitchTimeoutRef.current)
-        clipSwitchTimeoutRef.current = null
-      }
-    }
+    console.log(`Seeking to clip start: ${selectedClip.start}`)
+    videoRef.current.currentTime = selectedClip.start
   }, [selectedClip, videoSourceLoaded])
 
   const togglePlayPause = () => {
@@ -450,10 +462,6 @@ export default function VideoDetailPage() {
       videoRef.current.pause()
       setIsPlaying(false)
     } else {
-      if (selectedClip && videoRef.current.currentTime >= selectedClip.end) {
-        videoRef.current.currentTime = selectedClip.start
-      }
-
       videoRef.current
         .play()
         .then(() => {
@@ -465,6 +473,75 @@ export default function VideoDetailPage() {
           setIsPlaying(false)
         })
     }
+  }
+
+  const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!videoRef.current || !progressBarRef.current || !duration) return
+
+    const rect = progressBarRef.current.getBoundingClientRect()
+    const clickX = e.clientX - rect.left
+    const newTime = (clickX / rect.width) * duration
+
+    videoRef.current.currentTime = newTime
+    setCurrentTime(newTime)
+  }
+
+  const handleProgressDrag = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDragging || !videoRef.current || !progressBarRef.current || !duration) return
+
+    const rect = progressBarRef.current.getBoundingClientRect()
+    const dragX = e.clientX - rect.left
+    const newTime = Math.max(0, Math.min((dragX / rect.width) * duration, duration))
+
+    videoRef.current.currentTime = newTime
+    setCurrentTime(newTime)
+  }
+
+  const handleVolumeChange = (newVolume: number) => {
+    if (!videoRef.current) return
+
+    videoRef.current.volume = newVolume
+    setVolume(newVolume)
+    setIsMuted(newVolume === 0)
+  }
+
+  const toggleMute = () => {
+    if (!videoRef.current) return
+
+    videoRef.current.muted = !isMuted
+    setIsMuted(!isMuted)
+  }
+
+  const skipBackward = () => {
+    if (!videoRef.current) return
+    videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10)
+  }
+
+  const skipForward = () => {
+    if (!videoRef.current) return
+    videoRef.current.currentTime = Math.min(duration, videoRef.current.currentTime + 10)
+  }
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      videoRef.current?.requestFullscreen()
+      setIsFullscreen(true)
+    } else {
+      document.exitFullscreen()
+      setIsFullscreen(false)
+    }
+  }
+
+  const showControlsTemporarily = () => {
+    setShowControls(true)
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current)
+    }
+    controlsTimeoutRef.current = setTimeout(() => {
+      if (isPlaying) {
+        setShowControls(false)
+      }
+    }, 3000)
   }
 
   // Format time (seconds) to MM:SS format
@@ -487,7 +564,7 @@ export default function VideoDetailPage() {
 
   // Get the highest score from clips if video score is null
   const getVideoScore = (video: VideoResult): number | null => {
-
+    // If video has a score, use it
     if (video.score !== undefined && video.score !== null) {
       return video.score
     }
@@ -508,7 +585,7 @@ export default function VideoDetailPage() {
     return score.toFixed(2)
   }
 
-  // Select a clip
+  // Select a clip - just seek to the start time
   const handleSelectClip = (clip: Clip) => {
     setSelectedClip(clip)
   }
@@ -694,33 +771,40 @@ export default function VideoDetailPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left column - Video player and similar videos */}
           <div className="lg:col-span-2 space-y-8">
-            {/* Video player */}
+            {/* Enhanced Video player */}
             <div>
-              <div className="relative aspect-video bg-black rounded-lg overflow-hidden">
+              <div
+                className="relative aspect-video bg-black rounded-lg overflow-hidden group"
+                onMouseMove={showControlsTemporarily}
+                onMouseEnter={() => setShowControls(true)}
+                onMouseLeave={() => {
+                  if (isPlaying) {
+                    setShowControls(false)
+                  }
+                }}
+              >
                 {/* Video element */}
                 <video
                   ref={videoRef}
                   className="w-full h-full object-contain"
                   playsInline
-                  controls={false}
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}
                   onEnded={() => setIsPlaying(false)}
+                  onClick={togglePlayPause}
                 />
 
-                {/* Loading overlay - show when video source is not loaded or clip is switching */}
-                {(!videoSourceLoaded || isClipSwitching) && (
+                {/* Loading overlay */}
+                {!videoSourceLoaded && (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-40">
                     <div className="flex flex-col items-center">
                       <Loader2 className="h-10 w-10 text-white animate-spin mb-2" />
-                      <p className="text-white text-sm">
-                        {!videoSourceLoaded ? "Loading video..." : "Switching clip..."}
-                      </p>
+                      <p className="text-white text-sm">Loading video...</p>
                     </div>
                   </div>
                 )}
 
-                {/* Error message that doesn't block the UI */}
+                {/* Error message */}
                 {error && (
                   <div className="absolute top-4 left-4 right-4 bg-red-500/80 text-white px-4 py-2 rounded-md z-50">
                     <p className="text-sm font-medium">{error}</p>
@@ -755,33 +839,88 @@ export default function VideoDetailPage() {
                   </button>
                 )}
 
-                {/* Play/Pause overlay - only show when video is loaded and not switching clips */}
-                {videoSourceLoaded && !isClipSwitching && (
+                {/* Custom Video Controls */}
+                {videoSourceLoaded && (
                   <div
-                    className="absolute inset-0 flex items-center justify-center bg-black/20 cursor-pointer z-20"
-                    onClick={togglePlayPause}
+                    className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4 transition-opacity duration-300 z-30 ${
+                      showControls ? "opacity-100" : "opacity-0"
+                    }`}
                   >
-                    <button
-                      className="p-4 bg-black/40 rounded-full hover:bg-black/60 transition-colors"
-                      aria-label={isPlaying ? "Pause video" : "Play video"}
+                    {/* Progress Bar */}
+                    <div
+                      ref={progressBarRef}
+                      className="w-full h-2 bg-white/30 rounded-full mb-4 cursor-pointer"
+                      onClick={handleProgressClick}
+                      onMouseDown={() => setIsDragging(true)}
+                      onMouseUp={() => setIsDragging(false)}
+                      onMouseMove={handleProgressDrag}
                     >
-                      {isPlaying ? (
-                        <Pause className="h-10 w-10 text-white" />
-                      ) : (
-                        <Play className="h-10 w-10 text-white" />
-                      )}
-                    </button>
-                  </div>
-                )}
+                      <div
+                        className="h-full bg-brand-teal-500 rounded-full relative"
+                        style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }}
+                      >
+                        <div className="absolute right-0 top-1/2 transform translate-x-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg"></div>
+                      </div>
 
-                {/* Clip time indicator */}
-                {selectedClip && videoSourceLoaded && (
-                  <div className="absolute bottom-4 left-4 right-4 bg-black/60 text-white px-3 py-1 rounded-md text-sm z-30">
-                    <div className="flex justify-between">
-                      <span>
-                        Clip: {formatTime(selectedClip.start)} - {formatTime(selectedClip.end)}
-                      </span>
-                      <span>Duration: {formatDuration(selectedClip.start, selectedClip.end)}</span>
+                      {/* Clip markers */}
+                      {videoData.clips?.map((clip, index) => (
+                        <div
+                          key={index}
+                          className="absolute top-0 h-full w-1 bg-yellow-400 opacity-70"
+                          style={{ left: `${duration ? (clip.start / duration) * 100 : 0}%` }}
+                          title={`Clip ${index + 1}: ${formatTime(clip.start)} - ${formatTime(clip.end)}`}
+                        />
+                      ))}
+                    </div>
+
+                    {/* Control buttons */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        <button onClick={skipBackward} className="text-white hover:text-brand-teal-400">
+                          <SkipBack className="h-6 w-6" />
+                        </button>
+
+                        <button
+                          onClick={togglePlayPause}
+                          className="text-white hover:text-brand-teal-400 p-2 bg-white/20 rounded-full"
+                        >
+                          {isPlaying ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6" />}
+                        </button>
+
+                        <button onClick={skipForward} className="text-white hover:text-brand-teal-400">
+                          <SkipForward className="h-6 w-6" />
+                        </button>
+
+                        <div className="flex items-center gap-2">
+                          <button onClick={toggleMute} className="text-white hover:text-brand-teal-400">
+                            {isMuted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+                          </button>
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.1"
+                            value={isMuted ? 0 : volume}
+                            onChange={(e) => handleVolumeChange(Number.parseFloat(e.target.value))}
+                            className="w-20 accent-brand-teal-500"
+                          />
+                        </div>
+
+                        <span className="text-white text-sm">
+                          {formatTime(currentTime)} / {formatTime(duration)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {selectedClip && (
+                          <span className="text-white text-sm bg-black/50 px-2 py-1 rounded">
+                            Clip: {formatTime(selectedClip.start)} - {formatTime(selectedClip.end)}
+                          </span>
+                        )}
+                        <button onClick={toggleFullscreen} className="text-white hover:text-brand-teal-400">
+                          <Maximize className="h-5 w-5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -878,10 +1017,6 @@ export default function VideoDetailPage() {
                     const hasError = !!videoErrors[video.video_id]
                     const isLoaded = !!videoLoaded[video.video_id]
 
-                    console.log(`Rendering similar video: ${video.video_id}`)
-                    console.log(`Video URL: ${videoUrl}`)
-                    console.log(`Has error: ${hasError}, Is hovered: ${isHovered}, Is playing: ${isPlaying}`)
-
                     return (
                       <div
                         key={video.video_id}
@@ -898,10 +1033,10 @@ export default function VideoDetailPage() {
                       >
                         {/* Video container with fixed aspect ratio */}
                         <div className="relative aspect-video cursor-pointer">
-                          {}
+                          {/* Always use video element, but only play on hover */}
                           <video
                             ref={(el) => (similarVideoRefs.current[video.video_id] = el)}
-                            src={videoUrl} 
+                            src={videoUrl} // Use the URL directly
                             className="absolute inset-0 w-full h-full object-cover"
                             playsInline
                             muted
@@ -969,7 +1104,7 @@ export default function VideoDetailPage() {
                             </div>
                           )}
 
-                          {/* Error message overlay - only show for non interruption errors */}
+                          {/* Error message overlay - only show for non-interruption errors */}
                           {hasError && !videoErrors[video.video_id].includes("interrupted") && (
                             <div className="absolute inset-0 flex items-center justify-center bg-black/70 z-50">
                               <div className="text-center p-4">
@@ -1002,6 +1137,7 @@ export default function VideoDetailPage() {
               </div>
             )}
 
+            {/* Error message for similar videos */}
             {similarError && (
               <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
                 <div className="flex items-start">

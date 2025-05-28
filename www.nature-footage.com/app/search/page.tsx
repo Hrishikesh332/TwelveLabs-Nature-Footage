@@ -321,7 +321,7 @@ export default function SearchPage() {
 
       <main className="flex-grow container mx-auto px-4 py-8">
         <div className="mb-8">
-          <h1 className="text-4xl font-bold mb-2">{query ? `${query} Video Stock Footage` : "Video Stock Footage"}</h1>
+        <h1 className="text-4xl font-bold mb-2">{query ? `Search Results for "${query}"` : "Video Stock Footage"}</h1>
           <p className="text-gray-700">750+ Leading Nature and Underwater Video Professionals</p>
           <p className="text-gray-700">Over 6,000 Species Worldwide!</p>
 
