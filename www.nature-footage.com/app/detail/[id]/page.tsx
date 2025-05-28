@@ -294,9 +294,8 @@ export default function VideoDetailPage() {
   }
 
   // Handle playing a similar video with debounce to prevent race conditions
-  const playSimilarVideo = (videoId: string) => {
+  const playSimilarVideo = (videoId: string) => 
     if (playingSimilarVideoId === videoId) return
-
     playRequestsRef.current[videoId] = true
 
     if (playingSimilarVideoId && similarVideoRefs.current[playingSimilarVideoId]) {
@@ -588,6 +587,20 @@ export default function VideoDetailPage() {
   // Select a clip - just seek to the start time
   const handleSelectClip = (clip: Clip) => {
     setSelectedClip(clip)
+
+    if (videoRef.current && videoSourceLoaded) {
+      // Seek to clip start
+      videoRef.current.currentTime = clip.start
+
+      // Highlight
+      const videoContainer = videoRef.current.parentElement
+      if (videoContainer) {
+        videoContainer.classList.add("ring-4", "ring-brand-teal-500", "ring-opacity-70")
+        setTimeout(() => {
+          videoContainer.classList.remove("ring-4", "ring-brand-teal-500", "ring-opacity-70")
+        }, 800)
+      }
+    }
   }
 
   // Navigate to previous video
@@ -786,7 +799,7 @@ export default function VideoDetailPage() {
                 {/* Video element */}
                 <video
                   ref={videoRef}
-                  className="w-full h-full object-contain"
+                  className={`w-full h-full object-contain ${selectedClip ? "transition-all duration-300" : ""}`}
                   playsInline
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}
@@ -849,7 +862,7 @@ export default function VideoDetailPage() {
                     {/* Progress Bar */}
                     <div
                       ref={progressBarRef}
-                      className="w-full h-2 bg-white/30 rounded-full mb-4 cursor-pointer"
+                      className="w-full h-2 bg-white/30 rounded-full mb-4 cursor-pointer relative"
                       onClick={handleProgressClick}
                       onMouseDown={() => setIsDragging(true)}
                       onMouseUp={() => setIsDragging(false)}
@@ -862,15 +875,41 @@ export default function VideoDetailPage() {
                         <div className="absolute right-0 top-1/2 transform translate-x-1/2 -translate-y-1/2 w-4 h-4 bg-white rounded-full shadow-lg"></div>
                       </div>
 
-                      {/* Clip markers */}
-                      {videoData.clips?.map((clip, index) => (
-                        <div
-                          key={index}
-                          className="absolute top-0 h-full w-1 bg-yellow-400 opacity-70"
-                          style={{ left: `${duration ? (clip.start / duration) * 100 : 0}%` }}
-                          title={`Clip ${index + 1}: ${formatTime(clip.start)} - ${formatTime(clip.end)}`}
-                        />
-                      ))}
+                      {/* Simple clip divider lines */}
+                      {videoData.clips?.map((clip, index) => {
+                        const isSelected = selectedClip === clip
+                        const startPercent = duration ? (clip.start / duration) * 100 : 0
+                        const endPercent = duration ? (clip.end / duration) * 100 : 0
+
+                        return (
+                          <div key={index}>
+                            {/* Start marker */}
+                            <div
+                              className={`absolute top-0 h-full w-0.5 ${
+                                isSelected ? "bg-brand-teal-400" : "bg-brand-green-400"
+                              } opacity-80 cursor-pointer z-10`}
+                              style={{ left: `${startPercent}%` }}
+                              title={`Clip ${index + 1} Start: ${formatTime(clip.start)}`}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleSelectClip(clip)
+                              }}
+                            />
+                            {/* End marker */}
+                            <div
+                              className={`absolute top-0 h-full w-0.5 ${
+                                isSelected ? "bg-brand-teal-400" : "bg-brand-green-400"
+                              } opacity-60 cursor-pointer z-10`}
+                              style={{ left: `${endPercent}%` }}
+                              title={`Clip ${index + 1} End: ${formatTime(clip.end)}`}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleSelectClip(clip)
+                              }}
+                            />
+                          </div>
+                        )
+                      })}
                     </div>
 
                     {/* Control buttons */}
@@ -913,7 +952,8 @@ export default function VideoDetailPage() {
 
                       <div className="flex items-center gap-2">
                         {selectedClip && (
-                          <span className="text-white text-sm bg-black/50 px-2 py-1 rounded">
+                          <span className="text-white text-sm bg-brand-teal-500/70 px-2 py-1 rounded flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
                             Clip: {formatTime(selectedClip.start)} - {formatTime(selectedClip.end)}
                           </span>
                         )}
@@ -1188,10 +1228,10 @@ export default function VideoDetailPage() {
                   {videoData.clips.map((clip, index) => (
                     <div
                       key={index}
-                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                      className={`p-3 rounded-lg cursor-pointer transition-all duration-300 ${
                         selectedClip === clip
-                          ? "bg-brand-teal-100 border border-brand-teal-300"
-                          : "bg-white border border-gray-200 hover:bg-gray-50"
+                          ? "bg-gradient-to-r from-brand-teal-100 to-brand-green-50 border border-brand-teal-300 shadow-md"
+                          : "bg-white border border-gray-200 hover:bg-gray-50 hover:border-brand-teal-200"
                       }`}
                       onClick={() => handleSelectClip(clip)}
                     >
