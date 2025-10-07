@@ -118,7 +118,7 @@ export default function VideoGrid({ videoUrls = [] }: VideoGridProps) {
     "https://test-001-fashion.s3.eu-north-1.amazonaws.com/nature-footage-demo/CBE200624_0124.mp4",
     "https://test-001-fashion.s3.eu-north-1.amazonaws.com/nature-footage-demo/CBE200626_0094.mp4",
     "https://test-001-fashion.s3.eu-north-1.amazonaws.com/nature-footage-demo/CBE200627_0216.mp4",
-    "https://test-001-fashion.s3.eu-north-1.amazonaws.com/nature-footage-demo/CBE200629_0003.mp4",
+    "https://test-001-fashion.s3.eu-north-1.amazonaws.com/nature-footage-demo/CBE200624_0124.mp4",
     "https://test-001-fashion.s3.eu-north-1.amazonaws.com/nature-footage-demo/CBE220409_0010.mp4",
     "https://test-001-fashion.s3.eu-north-1.amazonaws.com/nature-footage-demo/CFI150512_0001.mp4",
     "https://test-001-fashion.s3.eu-north-1.amazonaws.com/nature-footage-demo/CGRA161205_0002.mp4",
