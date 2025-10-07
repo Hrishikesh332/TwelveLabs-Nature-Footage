@@ -238,15 +238,14 @@ def search_videos(query_text, search_options=None, page_limit=15, threshold="hig
         search_params = {
             "index_id": INDEX_ID,
             "query_text": query_text,
-            "options": search_options,
             "threshold": threshold,
             "page_limit": page_limit,
             "group_by": "video", 
             "sort_option": "score"
         }
         
-        logger.info(f"Searching with params: {search_params}")
-        search_results = client.search.query(**search_params)
+        logger.info(f"Searching with params: {search_params}, options: {search_options}")
+        search_results = client.search.query(options=search_options, **search_params)
         
         return search_results
     except Exception as e:
