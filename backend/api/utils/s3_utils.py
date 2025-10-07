@@ -43,8 +43,7 @@ def stream_video_from_s3(filename):
     try:
         logger.info(f"Request received for video: {filename}")
         
-        # Construct full S3 key
-        s3_key = f"species/{filename}" if not filename.startswith("species/") else filename
+        s3_key = filename.lstrip("/") 
 
         head = s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
         file_size = head['ContentLength']

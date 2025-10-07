@@ -148,7 +148,7 @@ def store_video_embedding(video_id, embedding_data, video_metadata=None):
             from api.utils.twelvelabs_api import get_video_info
             video_metadata = get_video_info(video_id)
 
-        filename = video_metadata.get("system_metadata", {}).get("filename", "unknown")
+        filename = video_metadata.get("user_metadata", {}).get("filename", "unknown")
         duration = float(video_metadata.get("system_metadata", {}).get("duration", 0))
 
         segments = embedding_data.get("video_embedding", {}).get("segments", [])

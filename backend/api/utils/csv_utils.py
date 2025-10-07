@@ -196,7 +196,7 @@ def generate_structured_csv_report(results):
         status = 'Success' if result.get('success', False) else 'Failed'
         
         video_info = result.get('video_info', {})
-        filename = video_info.get('system_metadata', {}).get('filename', 'N/A')
+        filename = video_info.get('user_metadata', {}).get('filename', 'N/A')
         
         raw_analysis = result.get('analysis', {}).get('data', 'No analysis data')
         timestamp = result.get('timestamp', time.time())

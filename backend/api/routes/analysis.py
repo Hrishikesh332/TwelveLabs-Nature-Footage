@@ -20,7 +20,7 @@ def api_analyze_video(video_id):
     use_lambda = data.get('use_lambda', True)
     
     video_info = get_video_info(video_id)
-    filename = video_info.get("system_metadata", {}).get("filename", "Unknown") if video_info else "Unknown"
+    filename = video_info.get("user_metadata", {}).get("filename", "Unknown") if video_info else "Unknown"
     
     try:
         logger.info(f"Analyzing video {video_id} ({filename})")
@@ -97,7 +97,7 @@ def api_batch_analyze():
             success, processed_result = process_analysis_result(video_id, result)
             
             # Save results to CSV
-            filename = video_info.get("system_metadata", {}).get("filename", "Unknown") if video_info else "Unknown"
+            filename = video_info.get("user_metadata", {}).get("filename", "Unknown") if video_info else "Unknown"
             
             if success:
                 status = "success"
@@ -133,7 +133,7 @@ def api_batch_analyze():
                     video_info = {"_id": video_id}
             
             # Save error to CSV
-            filename = video_info.get("system_metadata", {}).get("filename", "Unknown") if video_info else "Unknown"
+            filename = video_info.get("user_metadata", {}).get("filename", "Unknown") if video_info else "Unknown"
             save_analysis_result(video_id, filename, "error", str(e))
             
             results.append({

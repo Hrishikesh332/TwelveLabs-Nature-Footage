@@ -146,7 +146,7 @@ def api_debug_similar_videos(video_id):
             return jsonify(debug_info), 400
             
         debug_info["video_info"] = {
-            "filename": video_info.get("system_metadata", {}).get("filename", "unknown"),
+            "filename": video_info.get("user_metadata", {}).get("filename", "unknown"),
             "has_user_metadata": "user_metadata" in video_info
         }
         
