@@ -1,4 +1,4 @@
-twelvelabs
+twelvelabs>=1.0.0
 weaviate-client
 flask
 flask-cors
