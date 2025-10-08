@@ -9,3 +9,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+
+
+video_metadata_checker.py
+video_metadata_check_*.csv

@@ -54,6 +54,32 @@ def api_get_video_info(video_id):
 def api_stream_video(filename):
     from api.utils.s3_utils import stream_video_from_s3
     
+
+    if '/' not in filename and filename.endswith('.mp4'):
+        logger.info(f"Received simple filename: {filename}, trying to construct S3 path...")
+        
+        # Try common S3 path patterns based on the filename
+        # Pattern: JU231212_0147.mp4 -> JU/JU231212/q4/JU231212_0147.mp4
+        if filename.startswith('JU') and '_' in filename:
+            # Extract the prefix (e.g., "JU231212" from "JU231212_0147.mp4")
+            prefix = filename.split('_')[0]
+            # Try the pattern: JU/JU231212/q4/JU231212_0147.mp4
+            likely_path = f"JU/{prefix}/q4/{filename}"
+            logger.info(f"Trying likely S3 path: {likely_path}")
+            
+            # Test if this path exists in S3
+            try:
+                from api.utils.s3_utils import s3_client
+                from config.settings import S3_BUCKET_NAME
+                s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=likely_path)
+                logger.info(f"Found video at path: {likely_path}")
+                return stream_video_from_s3(likely_path)
+            except Exception as e:
+                logger.warning(f"Path {likely_path} not found in S3: {str(e)}")
+        
+        # If pattern matching fails, try the original filename
+        logger.warning(f"Could not find video with filename: {filename}")
+    
     return stream_video_from_s3(filename)
 
 

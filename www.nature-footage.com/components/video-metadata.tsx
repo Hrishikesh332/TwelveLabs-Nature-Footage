@@ -197,7 +197,7 @@ export default function VideoMetadata({ videoId }: VideoMetadataProps) {
     )
   }
 
-  const { user_metadata, system_metadata } = videoData
+  const { user_metadata = {}, system_metadata = {} } = videoData || {}
 
   return (
     <div className="bg-gray-50 rounded-lg p-6 mt-4 space-y-6">

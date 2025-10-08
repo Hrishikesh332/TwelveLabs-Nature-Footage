@@ -101,4 +101,18 @@ def test_s3_connection():
 
 def get_video_path(video_id):
 
-    return f"videos/{video_id}/original.mp4"
+    try:
+        from api.utils.twelvelabs_api import get_video_metadata
+        
+        metadata = get_video_metadata(video_id)
+        if metadata and 'filename' in metadata:
+            # Remove leading slash if present
+            filename = metadata['filename'].lstrip('/')
+            logger.info(f"Using filename from metadata: {filename}")
+            return filename
+        else:
+            logger.warning(f"No filename in metadata for video {video_id}, using default path")
+            return f"videos/{video_id}/original.mp4"
+    except Exception as e:
+        logger.error(f"Error getting video path for {video_id}: {str(e)}")
+        return f"videos/{video_id}/original.mp4"
